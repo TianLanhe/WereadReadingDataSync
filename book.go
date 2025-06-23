@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type Book struct {
@@ -21,7 +22,7 @@ type Book struct {
 	Intro      string   `json:"intro"`
 	Words      float64  `json:"words"`      // 书籍字数，单位：万字
 	Progress   float64  `json:"progress"`   // 进度，0-1，小数
-	FinishTime int64    `json:"finishTime"` // 阅读完成时间，毫秒
+	FinishTime int64    `json:"finishTime"` // 阅读完成时间，毫秒，没有读完为0
 }
 
 func TransferSheetRecordToBook(records []*SheetRecord) ([]*Book, map[string]string) {
@@ -242,6 +243,11 @@ func convertBookToMap(book *Book, coverToken string) map[string]interface{} {
 		readTimeFormatted += fmt.Sprintf("%d秒", seconds)
 	}
 
+	finishRead := "否"
+	if book.FinishTime > 0 {
+		finishRead = "是"
+	}
+
 	ret := map[string]interface{}{
 		"bookId":          book.BookId,
 		"书名":            book.Title,
@@ -258,11 +264,14 @@ func convertBookToMap(book *Book, coverToken string) map[string]interface{} {
 		"字数（单位：万字）": book.Words,
 		"简介":            book.Intro,
 		"阅读进度":        book.Progress,
+		"是否已读完":      finishRead,
 	}
 
 	// 如果已经阅读完成，才设置阅读完成时间字段
 	if book.Progress == 1 {
 		ret["阅读完成时间"] = book.FinishTime
+		ret["已读完年"] = time.UnixMilli(book.FinishTime).Format("2006年")
+		ret["已读完年月"] = time.UnixMilli(book.FinishTime).Format("2006年01月")
 	}
 
 	return ret
