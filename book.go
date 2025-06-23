@@ -248,6 +248,14 @@ func convertBookToMap(book *Book, coverToken string) map[string]interface{} {
 		finishRead = "是"
 	}
 
+	var firstLevelCategories []string
+	for _, category := range book.Categories {
+		parts := strings.Split(category, "-")
+		if len(parts) > 0 {
+			firstLevelCategories = append(firstLevelCategories, parts[0])
+		}
+	}
+
 	ret := map[string]interface{}{
 		"bookId":          book.BookId,
 		"书名":            book.Title,
@@ -255,6 +263,7 @@ func convertBookToMap(book *Book, coverToken string) map[string]interface{} {
 		"价格":            book.Price,
 		"作者":            book.Author,
 		"分类":            book.Categories,
+		"一级分类":        firstLevelCategories,
 		"是否可读":        canRead,
 		"评分":            book.Score,
 		"阅读时长（秒）":    book.ReadTime,
