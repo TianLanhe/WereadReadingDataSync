@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
-	"net/http"
 	"time"
 )
 
@@ -49,40 +48,35 @@ type SheetResponse struct {
 }
 
 var (
-    cachedToken        string
-    tokenExpiration    time.Time
-    tokenExpirationTTL = 2 * time.Hour // 假设token有效期为2小时
+	cachedToken        string
+	tokenExpiration    time.Time
+	tokenExpirationTTL = 2 * time.Hour // 假设token有效期为2小时
 )
 
 func GetTalentAccessToken() (string, error) {
-    if time.Now().Before(tokenExpiration) && cachedToken != "" {
-        return cachedToken, nil
-    }
+	if time.Now().Before(tokenExpiration) && cachedToken != "" {
+		return cachedToken, nil
+	}
 
-    jsonData, err := json.Marshal(TokenRequest{
-        AppID:     appID,
-        AppSecret: appSecret,
-    })
-    if err != nil {
-        return "", err
-    }
-
-	req, err := http.NewRequest("POST", tokenURL, bytes.NewBuffer(jsonData))
+	jsonData, err := json.Marshal(TokenRequest{
+		AppID:     appID,
+		AppSecret: appSecret,
+	})
 	if err != nil {
 		return "", err
 	}
 
-	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	headers := map[string]string{
+		"Content-Type": "application/json; charset=utf-8",
+	}
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	respBody, err := SendHTTPRequest("POST", tokenURL, jsonData, headers)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
 
 	var tokenResp TokenResponse
-	err = json.NewDecoder(resp.Body).Decode(&tokenResp)
+	err = json.Unmarshal(respBody, &tokenResp)
 	if err != nil {
 		return "", err
 	}
@@ -116,39 +110,20 @@ func ReadSheetRecords() ([]*SheetRecord, error) {
 
 		// 设置请求体为JSON空对象
 		reqBody := []byte("{}")
-		req, err := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
-		if err != nil {
-			fmt.Printf("Error creating HTTP request: %v\n", err)
-			return nil, err
+
+		headers := map[string]string{
+			"Authorization": token,
+			"Content-Type":  "application/json; charset=utf-8",
 		}
 
-		req.Header.Set("Authorization", token)
-		req.Header.Set("Content-Type", "application/json; charset=utf-8")
-
-		client := &http.Client{}
-		resp, err := client.Do(req)
+		respBody, err := SendHTTPRequest("POST", url, reqBody, headers)
 		if err != nil {
 			fmt.Printf("Error sending HTTP request: %v\n", err)
 			return nil, err
 		}
 
-		// 读取HTTP返回体内容
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return nil, fmt.Errorf("读取响应体失败: %w", err)
-		}
-
-		// 打印HTTP返回体内容
-		// fmt.Printf("HTTP 返回体内容:\n%s\n", string(body))
-
-		// 检查HTTP状态码
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("批量读取记录失败，状态码: %d, 响应体: %s", resp.StatusCode, string(body))
-		}
-
 		var sheetResp SheetResponse
-		err = json.Unmarshal(body, &sheetResp)
+		err = json.Unmarshal(respBody, &sheetResp)
 		if err != nil {
 			fmt.Printf("Error decoding sheet response: %v\n", err)
 			return nil, err
@@ -191,46 +166,25 @@ func BatchDeleteSheetRecords(recordIDs []string) error {
 		return fmt.Errorf("构造请求体失败: %w", err)
 	}
 
-	// 批量删除OpenAPI URL
-	req, err := http.NewRequest("POST", batchDeleteURL, bytes.NewBuffer(reqBody))
-	if err != nil {
-		return fmt.Errorf("创建HTTP请求失败: %w", err)
+	headers := map[string]string{
+		"Authorization": token,
+		"Content-Type":  "application/json; charset=utf-8",
 	}
 
-	req.Header.Set("Authorization", token)
-	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	respBody, err := SendHTTPRequest("POST", batchDeleteURL, reqBody, headers)
 	if err != nil {
 		return fmt.Errorf("发送HTTP请求失败: %w", err)
 	}
-	defer resp.Body.Close()
-
-	// 读取响应体
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("读取响应体失败: %w", err)
-	}
 
 	// 检查HTTP状态码
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("批量删除记录失败，状态码: %d, 响应体: %s", resp.StatusCode, string(body))
-	}
-
-	// 打印HTTP返回体内容
-	// fmt.Printf("HTTP 返回体内容:\n%s\n", string(body))
-
 	var sheetResp SheetResponse
-	err = json.Unmarshal(body, &sheetResp)
+	err = json.Unmarshal(respBody, &sheetResp)
 	if err != nil {
-		fmt.Printf("Error decoding sheet response: %v\n", err)
-		return err
+		return fmt.Errorf("解析响应体失败: %w", err)
 	}
 
 	if sheetResp.Code != 0 {
-		fmt.Printf("Unexpected response code: %d, message: %s\n", sheetResp.Code, sheetResp.Msg)
-		return fmt.Errorf("unexpected response code: %d, message: %s", sheetResp.Code, sheetResp.Msg)
+		return fmt.Errorf("批量删除记录失败，错误码: %d, 错误信息: %s", sheetResp.Code, sheetResp.Msg)
 	}
 
 	return nil
@@ -257,46 +211,25 @@ func BatchAddSheetRecords(records []map[string]interface{}) error {
 		return fmt.Errorf("构造请求体失败: %w", err)
 	}
 
-	// 替换为实际的批量新增记录URL
-	req, err := http.NewRequest("POST", batchAddURL, bytes.NewBuffer(reqBody))
-	if err != nil {
-		return fmt.Errorf("创建HTTP请求失败: %w", err)
+	headers := map[string]string{
+		"Authorization": token,
+		"Content-Type":  "application/json; charset=utf-8",
 	}
 
-	req.Header.Set("Authorization", token)
-	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	respBody, err := SendHTTPRequest("POST", batchAddURL, reqBody, headers)
 	if err != nil {
 		return fmt.Errorf("发送HTTP请求失败: %w", err)
 	}
-	defer resp.Body.Close()
-
-	// 读取响应体
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("读取响应体失败: %w", err)
-	}
-
-	// 打印HTTP返回体内容
-	// fmt.Printf("HTTP 返回体内容:\n%s\n", string(body))
 
 	// 检查HTTP状态码
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("批量添加记录失败，状态码: %d, 响应体: %s", resp.StatusCode, string(body))
-	}
-
 	var sheetResp SheetResponse
-	err = json.Unmarshal(body, &sheetResp)
+	err = json.Unmarshal(respBody, &sheetResp)
 	if err != nil {
-		fmt.Printf("Error decoding sheet response: %v\n", err)
-		return err
+		return fmt.Errorf("解析响应体失败: %w", err)
 	}
 
 	if sheetResp.Code != 0 {
-		fmt.Printf("Unexpected response code: %d, message: %s\n", sheetResp.Code, sheetResp.Msg)
-		return fmt.Errorf("unexpected response code: %d, message: %s", sheetResp.Code, sheetResp.Msg)
+		return fmt.Errorf("批量添加记录失败，错误码: %d, 错误信息: %s", sheetResp.Code, sheetResp.Msg)
 	}
 
 	return nil
@@ -316,38 +249,19 @@ func BatchUpdateSheetRecords(records []*SheetRecord) error {
 		return fmt.Errorf("构造请求体失败: %w", err)
 	}
 
-	// 替换为实际的批量更新记录URL
-	req, err := http.NewRequest("POST", batchUpdateURL, bytes.NewBuffer(reqBody))
-	if err != nil {
-		return fmt.Errorf("创建HTTP请求失败: %w", err)
+	headers := map[string]string{
+		"Authorization": token,
+		"Content-Type":  "application/json; charset=utf-8",
 	}
 
-	req.Header.Set("Authorization", token)
-	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	respBody, err := SendHTTPRequest("POST", batchUpdateURL, reqBody, headers)
 	if err != nil {
 		return fmt.Errorf("发送HTTP请求失败: %w", err)
 	}
-	defer resp.Body.Close()
-
-	// 读取响应体
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("读取响应体失败: %w", err)
-	}
-
-	// 打印HTTP返回体内容
-	// fmt.Printf("HTTP 返回体内容:\n%s\n", string(body))
 
 	// 检查HTTP状态码
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("批量更新记录失败，状态码: %d, 响应体: %s", resp.StatusCode, string(body))
-	}
-
 	var sheetResp SheetResponse
-	err = json.Unmarshal(body, &sheetResp)
+	err = json.Unmarshal(respBody, &sheetResp)
 	if err != nil {
 		return fmt.Errorf("解析响应体失败: %w", err)
 	}
@@ -403,40 +317,19 @@ func UploadMediaToSheet(fileName string, data []byte) (string, error) {
 		return "", err
 	}
 
-	// 创建HTTP请求
-	req, err := http.NewRequest("POST", uploadPicURL, body)
+	headers := map[string]string{
+		"Content-Type":  writer.FormDataContentType(),
+		"Authorization": token,
+	}
+
+	respBody, err := SendHTTPRequest("POST", uploadPicURL, body.Bytes(), headers)
 	if err != nil {
-		fmt.Println("Error creating request:", err)
-		return "", err
+		return "", fmt.Errorf("发送HTTP请求失败: %w", err)
 	}
 
-	// 设置请求头
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("Authorization", token)
-
-	// 发送请求
-	client := &http.Client{}
-	respUpload, err := client.Do(req)
-	if err != nil {
-		fmt.Println("Error sending request:", err)
-		return "", err
-	}
-	defer respUpload.Body.Close()
-
-	responseBody, err := io.ReadAll(respUpload.Body)
-	if err != nil {
-		return "", fmt.Errorf("读取响应体失败: %w", err)
-	}
-
-	// 打印HTTP返回体内容
-	// fmt.Printf("HTTP 返回体内容:\n%s\n", string(responseBody))
-
-	if respUpload.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("上传素材失败，状态码: %d, 响应体: %s", respUpload.StatusCode, string(responseBody))
-	}
-
+	// 检查HTTP状态码
 	var mediaResp SheetResponse
-	err = json.Unmarshal(responseBody, &mediaResp)
+	err = json.Unmarshal(respBody, &mediaResp)
 	if err != nil {
 		return "", fmt.Errorf("解析响应失败: %w", err)
 	}

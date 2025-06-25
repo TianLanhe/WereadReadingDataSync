@@ -267,6 +267,8 @@ func convertBookToMap(book *Book, coverToken string) map[string]interface{} {
 		"是否可读":        canRead,
 		"评分":            book.Score,
 		"阅读时长（秒）":    book.ReadTime,
+		"阅读时长（时）":    float64(book.ReadTime) / 3600,
+		"阅读时长（分）":    float64(book.ReadTime) / 60,
 		"评分（可视化）":    int(book.Score / 10),
 		"阅读时长格式化":  readTimeFormatted,
 		"封面":            []map[string]string{{"file_token": coverToken}},

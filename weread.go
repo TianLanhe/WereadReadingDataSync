@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -20,6 +21,7 @@ const (
 	bookInfoURL          = "https://i.weread.qq.com/book/info"
 	mineReadBookURL      = "https://i.weread.qq.com/mine/readbook?count=100&rating=0&star=0&listType=3&yearRange=0_0&maxidx=%d"
 	MaxConcurrentWorkers = 10 // 控制并发协程数量
+	readingTimeURL       = "https://i.weread.qq.com/readdata/detail?mode=anually&baseTime=%d&defaultPreferBook=0"
 )
 
 ////////////// 我的书架返回结构 /////////////////////
@@ -189,6 +191,15 @@ type YearPreference struct {
 }
 
 ////////////// 我的阅读数据返回结构 /////////////////////
+
+////////////// 我的阅读时长返回结构 /////////////////////
+
+type ReadingTimeResponse struct {
+	MonthReadTimes map[string]int64 `json:"readTimes"`
+	DailyReadTimes map[string]int64 `json:"dailyReadTimes"`
+	Errcode        int              `json:"errcode"`
+	Errmsg         string           `json:"errmsg"`
+}
 
 // 封装HTTP请求逻辑
 func GetWeReadBookShelfInfo() (*BookShelfInfoResponse, error) {
@@ -459,4 +470,76 @@ func GetMineReadBook() ([]*MineReadBook, map[string]*MineReadBook, map[string]*M
 	}
 
 	return allBooks, readingBooks, finishBooks, nil
+}
+
+// GetYearReadingTime 获取一整年阅读时长
+func GetYearReadingTime(yearOffset int) (map[time.Time]int64, map[time.Time]int64, error) {
+	// 调用GetAccessToken获取access_token
+	accessToken, err := GetAccessToken()
+	if err != nil {
+		return nil, nil, fmt.Errorf("获取access_token失败: %w", err)
+	}
+
+	// 计算baseTime
+	var baseTime int64
+	if yearOffset == 0 {
+		baseTime = 0
+	} else {
+		if yearOffset < 0 {
+			yearOffset = -yearOffset
+		}
+		currentYear := time.Now().Year()
+		year := currentYear - yearOffset
+		baseTime = time.Date(year, time.January, 1, 0, 0, 0, 0, time.Local).Unix()
+	}
+
+	// 构建请求URL
+	url := fmt.Sprintf(readingTimeURL, baseTime)
+
+	// 设置请求头
+	headers := map[string]string{
+		"accessToken": accessToken,
+		"vid":         VID,
+	}
+
+	// 调用通用HTTP请求函数
+	respBody, err := SendHTTPRequest("GET", url, nil, headers)
+	if err != nil {
+		return nil, nil, fmt.Errorf("发送请求失败: %w", err)
+	}
+
+	var data ReadingTimeResponse
+	err = json.Unmarshal(respBody, &data)
+	if err != nil {
+		return nil, nil, fmt.Errorf("解析JSON失败: %w", err)
+	}
+
+	// 检查是否存在错误响应
+	if data.Errcode != 0 {
+		return nil, nil, fmt.Errorf("HTTP 请求失败: %s", data.Errmsg)
+	}
+
+	// 转换每月阅读时长
+	monthReadTimesMap := make(map[time.Time]int64)
+	for key, value := range data.MonthReadTimes {
+		timestamp, err := strconv.ParseInt(key, 10, 64)
+		if err != nil {
+			return nil, nil, fmt.Errorf("解析月份时间戳失败: %w", err)
+		}
+		t := time.Unix(timestamp, 0)
+		monthReadTimesMap[t] = value
+	}
+
+	// 转换每日阅读时长
+	dailyReadTimesMap := make(map[time.Time]int64)
+	for key, value := range data.DailyReadTimes {
+		timestamp, err := strconv.ParseInt(key, 10, 64)
+		if err != nil {
+			return nil, nil, fmt.Errorf("解析日期时间戳失败: %w", err)
+		}
+		t := time.Unix(timestamp, 0)
+		dailyReadTimesMap[t] = value
+	}
+
+	return monthReadTimesMap, dailyReadTimesMap, nil
 }
