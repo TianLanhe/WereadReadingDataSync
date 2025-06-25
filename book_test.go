@@ -6,7 +6,7 @@ import (
 )
 
 func TestTransferSheetRecordToBook(t *testing.T) {
-	records, err := ReadSheetRecords()
+	records, err := ReadSheetRecords(sheetAppID, bookListTableID)
 	if err != nil {
 		t.Fatal(err)
 	}

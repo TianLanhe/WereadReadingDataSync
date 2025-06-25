@@ -10,14 +10,17 @@ import (
 )
 
 const (
-	tokenURL       = "https://fsopen.bytedance.net/open-apis/auth/v3/tenant_access_token/internal"
-	appID          = "cli_a4d37a9d357cd013"
-	appSecret      = "OeHwPL7hGxRf7TFOFlrtxbCrp3xROaTV"
-	readSheetURL   = "https://fsopen.bytedance.net/open-apis/bitable/v1/apps/Q8rAbZMgwacvnXswZ2VlBNc1goh/tables/tblWb9n3b9nNVBJb/records/search?page_size=500"
-	batchDeleteURL = "https://open.larkoffice.com/open-apis/bitable/v1/apps/Q8rAbZMgwacvnXswZ2VlBNc1goh/tables/tblWb9n3b9nNVBJb/records/batch_delete"
-	batchAddURL    = "https://open.larkoffice.com/open-apis/bitable/v1/apps/Q8rAbZMgwacvnXswZ2VlBNc1goh/tables/tblWb9n3b9nNVBJb/records/batch_create"
-	batchUpdateURL = "https://open.larkoffice.com/open-apis/bitable/v1/apps/Q8rAbZMgwacvnXswZ2VlBNc1goh/tables/tblWb9n3b9nNVBJb/records/batch_update"
-	uploadPicURL   = "https://fsopen.bytedance.net/open-apis/drive/v1/medias/upload_all"
+	sheetAppID             = "Q8rAbZMgwacvnXswZ2VlBNc1goh"
+	bookListTableID        = "tblWb9n3b9nNVBJb"
+	readTimeTableID        = "tblPahtrjx987XX9"
+	tokenURL               = "https://fsopen.bytedance.net/open-apis/auth/v3/tenant_access_token/internal"
+	appID                  = "cli_a4d37a9d357cd013"
+	appSecret              = "OeHwPL7hGxRf7TFOFlrtxbCrp3xROaTV"
+	readSheetURLTemplate   = "https://fsopen.bytedance.net/open-apis/bitable/v1/apps/%s/tables/%s/records/search?page_size=500"
+	batchDeleteURLTemplate = "https://open.larkoffice.com/open-apis/bitable/v1/apps/%s/tables/%s/records/batch_delete"
+	batchAddURLTemplate    = "https://open.larkoffice.com/open-apis/bitable/v1/apps/%s/tables/%s/records/batch_create"
+	batchUpdateURLTemplate = "https://open.larkoffice.com/open-apis/bitable/v1/apps/%s/tables/%s/records/batch_update"
+	uploadPicURL           = "https://fsopen.bytedance.net/open-apis/drive/v1/medias/upload_all"
 )
 
 type TokenRequest struct {
@@ -91,7 +94,7 @@ func GetTalentAccessToken() (string, error) {
 }
 
 // ReadSheetRecords 批量读取多维表格的记录
-func ReadSheetRecords() ([]*SheetRecord, error) {
+func ReadSheetRecords(appID, tableID string) ([]*SheetRecord, error) {
 	token, err := GetTalentAccessToken()
 	if err != nil {
 		fmt.Printf("Error getting access token: %v\n", err)
@@ -100,12 +103,13 @@ func ReadSheetRecords() ([]*SheetRecord, error) {
 
 	var records []*SheetRecord
 	pageToken := ""
+	baseURL := fmt.Sprintf(readSheetURLTemplate, appID, tableID)
 
 	for {
 		// 构建请求URL，包含page_token
-		url := readSheetURL
+		url := baseURL
 		if pageToken != "" {
-			url = fmt.Sprintf("%s&page_token=%s", readSheetURL, pageToken)
+			url = fmt.Sprintf("%s&page_token=%s", baseURL, pageToken)
 		}
 
 		// 设置请求体为JSON空对象
@@ -152,11 +156,13 @@ func ReadSheetRecords() ([]*SheetRecord, error) {
 }
 
 // BatchDeleteSheetRecords 批量删除多维表格的记录
-func BatchDeleteSheetRecords(recordIDs []string) error {
+func BatchDeleteSheetRecords(appID, tableID string, recordIDs []string) error {
 	token, err := GetTalentAccessToken()
 	if err != nil {
 		return fmt.Errorf("获取访问令牌失败: %w", err)
 	}
+
+	url := fmt.Sprintf(batchDeleteURLTemplate, appID, tableID)
 
 	// 构建新的批量删除请求体
 	reqBody, err := json.Marshal(map[string]interface{}{
@@ -171,7 +177,7 @@ func BatchDeleteSheetRecords(recordIDs []string) error {
 		"Content-Type":  "application/json; charset=utf-8",
 	}
 
-	respBody, err := SendHTTPRequest("POST", batchDeleteURL, reqBody, headers)
+	respBody, err := SendHTTPRequest("POST", url, reqBody, headers)
 	if err != nil {
 		return fmt.Errorf("发送HTTP请求失败: %w", err)
 	}
@@ -191,11 +197,13 @@ func BatchDeleteSheetRecords(recordIDs []string) error {
 }
 
 // BatchAddSheetRecords 批量新增多维表格记录
-func BatchAddSheetRecords(records []map[string]interface{}) error {
+func BatchAddSheetRecords(appID, tableID string, records []map[string]interface{}) error {
 	token, err := GetTalentAccessToken()
 	if err != nil {
 		return fmt.Errorf("获取访问令牌失败: %w", err)
 	}
+
+	url := fmt.Sprintf(batchAddURLTemplate, appID, tableID)
 
 	// 构造请求体
 	m := []map[string]interface{}{}
@@ -216,7 +224,7 @@ func BatchAddSheetRecords(records []map[string]interface{}) error {
 		"Content-Type":  "application/json; charset=utf-8",
 	}
 
-	respBody, err := SendHTTPRequest("POST", batchAddURL, reqBody, headers)
+	respBody, err := SendHTTPRequest("POST", url, reqBody, headers)
 	if err != nil {
 		return fmt.Errorf("发送HTTP请求失败: %w", err)
 	}
@@ -236,11 +244,13 @@ func BatchAddSheetRecords(records []map[string]interface{}) error {
 }
 
 // BatchUpdateSheetRecord 批量更新多维表格记录
-func BatchUpdateSheetRecords(records []*SheetRecord) error {
+func BatchUpdateSheetRecords(appID, tableID string, records []*SheetRecord) error {
 	token, err := GetTalentAccessToken()
 	if err != nil {
 		return fmt.Errorf("获取访问令牌失败: %w", err)
 	}
+
+	url := fmt.Sprintf(batchUpdateURLTemplate, appID, tableID)
 
 	reqBody, err := json.Marshal(map[string]interface{}{
 		"records": records,
@@ -254,7 +264,7 @@ func BatchUpdateSheetRecords(records []*SheetRecord) error {
 		"Content-Type":  "application/json; charset=utf-8",
 	}
 
-	respBody, err := SendHTTPRequest("POST", batchUpdateURL, reqBody, headers)
+	respBody, err := SendHTTPRequest("POST", url, reqBody, headers)
 	if err != nil {
 		return fmt.Errorf("发送HTTP请求失败: %w", err)
 	}

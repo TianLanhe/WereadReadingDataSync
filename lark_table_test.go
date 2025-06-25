@@ -13,7 +13,7 @@ func TestGetTalentAccessToken(t *testing.T) {
 }
 
 func TestBatchDeleteSheetRecords(t *testing.T) {
-	err := BatchDeleteSheetRecords([]string{"recggVJsus", "recue0Jgmx"})
+	err := BatchDeleteSheetRecords(sheetAppID, bookListTableID, []string{"recggVJsus", "recue0Jgmx"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestBatchAddSheetRecords(t *testing.T) {
 		},
 	}
 
-	err := BatchAddSheetRecords(records)
+	err := BatchAddSheetRecords(sheetAppID, bookListTableID, records)
 	if err != nil {
 		t.Fatal(err)
 	}
