@@ -1,7 +1,6 @@
 package main
 
 import (
-	"sort"
 	"time"
 )
 
@@ -10,23 +9,45 @@ func CalculateReadTime(readingTimeFromWeread map[time.Time]int64, readingTimeFro
 	var toEdit []*SheetRecord
 	var toDelete []string
 
-	// 提取所有时间键
-	keys := make([]time.Time, 0, len(readingTimeFromWeread))
-	for k := range readingTimeFromWeread {
-		keys = append(keys, k)
+	// 1. 先遍历 readingTimeFromSheet，找出不在 readingTimeFromWeread 存在的记录，添加到待删除列表中
+	for _, record := range readingTimeFromSheet {
+		dateUnixMilli := getInt64Value(record.Fields, "日期")
+		date := time.UnixMilli(dateUnixMilli)
+		if _, exists := readingTimeFromWeread[date]; !exists {
+			toDelete = append(toDelete, record.RecordID)
+		}
 	}
 
-	// 按时间从大到小排序
-	sort.Slice(keys, func(i, j int) bool {
-		return keys[i].After(keys[j])
-	})
-
-	// 按排序后的顺序添加到toAdd
-	for _, k := range keys {
-		toAdd = append(toAdd, convertReadTimeToMap(k, readingTimeFromWeread[k]))
+	// 2. 再遍历 readingTimeFromWeread，找出不在 readingTimeFromSheet 存在的记录，添加到待添加列表中
+	for date, readTime := range readingTimeFromWeread {
+		dateUnixMilli1 := date.UnixMilli()
+		found := false
+		for _, record := range readingTimeFromSheet {
+			dateUnixMilli2 := getInt64Value(record.Fields, "日期")
+			if dateUnixMilli1 == dateUnixMilli2 {
+				found = true
+				break
+			}
+		}
+		if !found {
+			toAdd = append(toAdd, convertReadTimeToMap(date, readTime))
+		}
 	}
 
-	// TODO 补充编辑和删除的内容
+	// 3. 最后遍历 readingTimeFromSheet，找出值在 readingTimeFromWeread 存在差异的记录，添加到待编辑列表中
+	for _, record := range readingTimeFromSheet {
+		dateUnixMilli := getInt64Value(record.Fields, "日期")
+		date := time.UnixMilli(dateUnixMilli)
+		if readTime, exists := readingTimeFromWeread[date]; exists {
+			readTimeFromSheet := getInt64Value(record.Fields, "当日阅读时长（秒）")
+			if readTimeFromSheet != readTime {
+				toEdit = append(toEdit, &SheetRecord{
+					Fields:   convertReadTimeToMap(date, readTime),
+					RecordID: record.RecordID,
+				})
+			}
+		}
+	}
 
 	return toAdd, toEdit, toDelete, nil
 }

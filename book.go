@@ -402,7 +402,7 @@ func getInt64Value(fields map[string]interface{}, key string) int64 {
 		case int:
 			return int64(v)
 		case float64:
-			return int64(int(v))
+			return int64(v)
 		case string:
 			var i int64
 			fmt.Sscanf(v, "%d", &i)
