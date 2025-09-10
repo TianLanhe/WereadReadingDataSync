@@ -146,7 +146,7 @@ func TransferShelfResponseToBook(bookFromWeRead *BookShelfInfoResponse, bookDeta
 	return weReadBookMap
 }
 
-// CompareBooks 比较书籍列表，返回需要添加、编辑和删除的书籍列表
+// CalculateBooks 比较书籍列表，返回需要添加、编辑和删除的书籍列表
 func CalculateBooks(bookFromWeRead *BookShelfInfoResponse, bookDetailList map[string]*BookDetailResponse, finishedBooks map[string]*MineReadBook, bookFromSheet []*SheetRecord) ([]map[string]interface{}, []*SheetRecord, []string, error) {
 	// 调用 TransferSheetRecordToBook 转换 bookFromSheet
 	sheetBookList, sheetBookId2recordId := TransferSheetRecordToBook(bookFromSheet)
@@ -164,6 +164,12 @@ func CalculateBooks(bookFromWeRead *BookShelfInfoResponse, bookDetailList map[st
 		}
 	}
 
+	// 创建并发上传管理器，限制QPS为5
+	uploadManager := NewCoverUploadManager(5)
+	defer uploadManager.Close()
+
+	// 收集需要上传封面的书籍（仅添加到toAdd和toEdit的）
+	var booksNeedCover []*Book
 	var toAdd []map[string]interface{}
 	var toEdit []*SheetRecord
 	var toDelete []string
@@ -171,14 +177,7 @@ func CalculateBooks(bookFromWeRead *BookShelfInfoResponse, bookDetailList map[st
 	// 找出需要添加的书籍
 	for bookId, weReadBook := range weReadBookMap {
 		if _, exists := sheetBookId2recordId[bookId]; !exists {
-			// 下载并上传封面图片
-			coverToken, err := UploadCoverToSheet(weReadBook.Cover)
-			if err != nil {
-				return nil, nil, nil, err
-			}
-			bookMap := convertBookToMap(weReadBook, coverToken)
-			toAdd = append(toAdd, bookMap)
-			fmt.Printf("要添加的书籍: %+v\n", bookMap)
+			booksNeedCover = append(booksNeedCover, weReadBook)
 		}
 	}
 
@@ -203,10 +202,60 @@ func CalculateBooks(bookFromWeRead *BookShelfInfoResponse, bookDetailList map[st
 
 		// 两边都存在，如果内容发生了变更则进行更新
 		if !isBookEqual(sheetBook, weReadBook) {
-			// 下载并上传封面图片
-			coverToken, err := UploadCoverToSheet(weReadBook.Cover)
-			if err != nil {
-				return nil, nil, nil, err
+			booksNeedCover = append(booksNeedCover, weReadBook)
+		}
+	}
+
+	// 预加载需要上传的封面（仅实际需要的书籍）
+	for _, book := range booksNeedCover {
+		if book.Cover != "" {
+			uploadManager.StartUpload(book.Cover)
+		}
+	}
+
+	// 处理需要添加的书籍
+	for bookId, weReadBook := range weReadBookMap {
+		if _, exists := sheetBookId2recordId[bookId]; !exists {
+			// 使用并发上传管理器获取封面token
+			coverToken := ""
+			if weReadBook.Cover != "" {
+				var err error
+				coverToken, err = uploadManager.GetResult(weReadBook.Cover)
+				if err != nil {
+					return nil, nil, nil, err
+				}
+			}
+			bookMap := convertBookToMap(weReadBook, coverToken)
+			toAdd = append(toAdd, bookMap)
+			fmt.Printf("要添加的书籍: %+v\n", bookMap)
+		}
+	}
+
+	// 处理需要编辑的书籍
+	for _, sheetBook := range sheetBookList {
+		if sheetBook.BookId == "" {
+			continue
+		}
+		recordID, ok := sheetBookId2recordId[sheetBook.BookId]
+		if !ok || recordID == "" {
+			continue
+		}
+
+		weReadBook, exists := weReadBookMap[sheetBook.BookId]
+		if !exists || weReadBook == nil {
+			continue
+		}
+
+		// 两边都存在，如果内容发生了变更则进行更新
+		if !isBookEqual(sheetBook, weReadBook) {
+			// 使用并发上传管理器获取封面token
+			coverToken := ""
+			if weReadBook.Cover != "" {
+				var err error
+				coverToken, err = uploadManager.GetResult(weReadBook.Cover)
+				if err != nil {
+					return nil, nil, nil, err
+				}
 			}
 
 			oldBookMap := convertBookToMap(sheetBook, "")
@@ -291,6 +340,7 @@ func convertBookToMap(book *Book, coverToken string) map[string]interface{} {
 // 辅助函数：比较两本书是否相同
 func isBookEqual(book1, book2 *Book) bool {
 	var diffs []string
+	var keyChange bool
 
 	if book1.Title != book2.Title {
 		diffs = append(diffs, fmt.Sprintf("Title不同: book1=%s, book2=%s", book1.Title, book2.Title))
@@ -303,35 +353,45 @@ func isBookEqual(book1, book2 *Book) bool {
 	}
 	if book1.CanRead != book2.CanRead {
 		diffs = append(diffs, fmt.Sprintf("CanRead不同: book1=%v, book2=%v", book1.CanRead, book2.CanRead))
+		keyChange = true
 	}
 	if book1.Score != book2.Score {
 		diffs = append(diffs, fmt.Sprintf("Score不同: book1=%.1f, book2=%.1f", book1.Score, book2.Score))
 	}
 	if book1.ReadTime != book2.ReadTime {
 		diffs = append(diffs, fmt.Sprintf("ReadTime不同: book1=%d, book2=%d", book1.ReadTime, book2.ReadTime))
+		keyChange = true
 	}
 	if book1.ShelfName != book2.ShelfName {
 		diffs = append(diffs, fmt.Sprintf("ShelfName不同: book1=%s, book2=%s", book1.ShelfName, book2.ShelfName))
+		keyChange = true
 	}
 	if book1.Intro != book2.Intro {
 		diffs = append(diffs, fmt.Sprintf("Intro不同: book1=%s, book2=%s", book1.Intro, book2.Intro))
 	}
 	if book1.Words != book2.Words {
 		diffs = append(diffs, fmt.Sprintf("Words不同: book1=%.2f, book2=%.2f", book1.Words, book2.Words))
+		keyChange = true
 	}
 	if book1.Progress != book2.Progress {
 		diffs = append(diffs, fmt.Sprintf("Progress不同: book1=%.2f, book2=%.2f", book1.Progress, book2.Progress))
+		keyChange = true
 	}
 	// 新增FinishTime字段比较
 	if book1.FinishTime != book2.FinishTime {
 		diffs = append(diffs, fmt.Sprintf("FinishTime不同: book1=%d, book2=%d", book1.FinishTime, book2.FinishTime))
+		keyChange = true
 	}
 	if !compareStringSlices(book1.Categories, book2.Categories) {
 		diffs = append(diffs, fmt.Sprintf("Categories不同: book1=%v, book2=%v", book1.Categories, book2.Categories))
 	}
 
 	if len(diffs) > 0 {
-		fmt.Printf("两本书的不同之处: %v\n", strings.Join(diffs, "\t"))
+		keyChangeStr := ""
+		if keyChange {
+			keyChangeStr = "（关键信息变更）"
+		}
+		fmt.Printf("两本书的不同之处%v: %v\n", keyChangeStr, strings.Join(diffs, "\t"))
 		return false
 	}
 	return true
