@@ -3,10 +3,14 @@ package main
 import (
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
 	"strings"
 	"time"
+)
+
+const (
+	picUploadConcurrentQPS = 5
+	maxPicUploadWaitTime   = time.Hour
 )
 
 type Book struct {
@@ -166,7 +170,7 @@ func CalculateBooks(bookFromWeRead *BookShelfInfoResponse, bookDetailList map[st
 	}
 
 	// 创建并发上传管理器，限制QPS为5
-	uploadManager := NewCoverUploadManager(4)
+	uploadManager := NewCoverUploadManager(picUploadConcurrentQPS, maxPicUploadWaitTime)
 	defer uploadManager.Close()
 
 	// 收集需要上传封面的书籍（仅添加到toAdd和toEdit的）
@@ -540,8 +544,8 @@ func UploadCoverToSheet(cover string) (string, error) {
 	// 调用UploadMediaToSheet上传图片
 	url, err := UploadMediaToSheet(cover, data)
 	if err != nil { // 重试一次
-		time.Sleep(time.Millisecond * time.Duration(500+rand.Intn(500)))
-		fmt.Sprintf("上传封面失败，重试一次... cover:%v", cover)
+		time.Sleep(time.Second)
+		fmt.Printf("上传封面失败，重试一次... cover:%v\n", cover)
 		return UploadMediaToSheet(cover, data)
 	}
 	return url, nil

@@ -5,18 +5,17 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
-	"golang.org/x/time/rate"
 )
 
 // CoverUploadManager 管理并发封面上传
 type CoverUploadManager struct {
-	limiter *rate.Limiter
-	mu      sync.RWMutex
-	results map[string]*uploadResult
-	wg      sync.WaitGroup
-	ctx     context.Context
-	cancel  context.CancelFunc
+	limiter  *TokenBucket
+	mu       sync.RWMutex
+	results  map[string]*uploadResult
+	wg       sync.WaitGroup
+	ctx      context.Context
+	cancel   context.CancelFunc
+	waitTime time.Duration
 }
 
 // uploadResult 存储上传结果
@@ -27,13 +26,14 @@ type uploadResult struct {
 }
 
 // NewCoverUploadManager 创建新的封面上传管理器
-func NewCoverUploadManager(qps int) *CoverUploadManager {
+func NewCoverUploadManager(qps int64, waitTime time.Duration) *CoverUploadManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &CoverUploadManager{
-		limiter: rate.NewLimiter(rate.Limit(qps), qps),
-		results: make(map[string]*uploadResult),
-		ctx:     ctx,
-		cancel:  cancel,
+		limiter:  NewTokenBucket(qps, qps),
+		results:  make(map[string]*uploadResult),
+		ctx:      ctx,
+		cancel:   cancel,
+		waitTime: waitTime,
 	}
 }
 
@@ -52,10 +52,10 @@ func (m *CoverUploadManager) StartUpload(coverURL string) {
 		defer m.wg.Done()
 
 		// 使用速率限制器
-		err := m.limiter.Wait(m.ctx)
-		if err != nil {
+		res := m.limiter.SyncTake(1, m.waitTime)
+		if !res {
 			m.mu.Lock()
-			m.results[coverURL] = &uploadResult{err: fmt.Errorf("rate limiter error: %w", err), done: true}
+			m.results[coverURL] = &uploadResult{err: fmt.Errorf("rate limiter error: get token failed."), done: true}
 			m.mu.Unlock()
 			return
 		}
@@ -93,21 +93,13 @@ func (m *CoverUploadManager) GetResult(coverURL string) (string, error) {
 		m.mu.RUnlock()
 
 		// 短暂休眠避免CPU占用过高
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-// PreloadCovers 预加载所有需要的封面
-func (m *CoverUploadManager) PreloadCovers(books map[string]*Book) {
-	for _, book := range books {
-		if book.Cover != "" {
-			m.StartUpload(book.Cover)
-		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
 // Close 等待所有上传完成
 func (m *CoverUploadManager) Close() {
 	m.wg.Wait()
+	m.limiter.Stop()
 	m.cancel()
 }
