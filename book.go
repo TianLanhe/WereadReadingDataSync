@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"strings"
 	"time"
@@ -165,7 +166,7 @@ func CalculateBooks(bookFromWeRead *BookShelfInfoResponse, bookDetailList map[st
 	}
 
 	// 创建并发上传管理器，限制QPS为5
-	uploadManager := NewCoverUploadManager(5)
+	uploadManager := NewCoverUploadManager(4)
 	defer uploadManager.Close()
 
 	// 收集需要上传封面的书籍（仅添加到toAdd和toEdit的）
@@ -201,7 +202,7 @@ func CalculateBooks(bookFromWeRead *BookShelfInfoResponse, bookDetailList map[st
 		}
 
 		// 两边都存在，如果内容发生了变更则进行更新
-		if !isBookEqual(sheetBook, weReadBook) {
+		if !isBookEqual(sheetBook, weReadBook, true) {
 			booksNeedCover = append(booksNeedCover, weReadBook)
 		}
 	}
@@ -247,7 +248,7 @@ func CalculateBooks(bookFromWeRead *BookShelfInfoResponse, bookDetailList map[st
 		}
 
 		// 两边都存在，如果内容发生了变更则进行更新
-		if !isBookEqual(sheetBook, weReadBook) {
+		if !isBookEqual(sheetBook, weReadBook, false) {
 			// 使用并发上传管理器获取封面token
 			coverToken := ""
 			if weReadBook.Cover != "" {
@@ -258,14 +259,11 @@ func CalculateBooks(bookFromWeRead *BookShelfInfoResponse, bookDetailList map[st
 				}
 			}
 
-			oldBookMap := convertBookToMap(sheetBook, "")
 			newBookMap := convertBookToMap(weReadBook, coverToken)
-
 			toEdit = append(toEdit, &SheetRecord{
 				Fields:   newBookMap,
 				RecordID: recordID,
 			})
-			fmt.Printf("要编辑的书籍记录ID: %s\n编辑前的书籍内容: %+v\n编辑后的书籍内容: %+v\n", recordID, oldBookMap, newBookMap)
 		}
 	}
 
@@ -338,7 +336,7 @@ func convertBookToMap(book *Book, coverToken string) map[string]interface{} {
 }
 
 // 辅助函数：比较两本书是否相同
-func isBookEqual(book1, book2 *Book) bool {
+func isBookEqual(book1, book2 *Book, print bool) bool {
 	var diffs []string
 	var keyChange bool
 
@@ -391,7 +389,9 @@ func isBookEqual(book1, book2 *Book) bool {
 		if keyChange {
 			keyChangeStr = "（关键信息变更）"
 		}
-		fmt.Printf("两本书的不同之处%v: %v\n", keyChangeStr, strings.Join(diffs, "\t"))
+		if print {
+			fmt.Printf("这本书(%v)的不同之处%v: %v\n", book1.Title, keyChangeStr, strings.Join(diffs, "\t"))
+		}
 		return false
 	}
 	return true
@@ -538,7 +538,13 @@ func UploadCoverToSheet(cover string) (string, error) {
 	}
 
 	// 调用UploadMediaToSheet上传图片
-	return UploadMediaToSheet(cover, data)
+	url, err := UploadMediaToSheet(cover, data)
+	if err != nil { // 重试一次
+		time.Sleep(time.Millisecond * time.Duration(500+rand.Intn(500)))
+		fmt.Sprintf("上传封面失败，重试一次... cover:%v", cover)
+		return UploadMediaToSheet(cover, data)
+	}
+	return url, nil
 }
 
 // TransferMineReadBookToShelfResponse 将 MineReadBook 映射到 BookShelfInfoResponse

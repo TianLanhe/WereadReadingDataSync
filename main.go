@@ -11,6 +11,8 @@ func main() {
 	mode := flag.String("mode", "all", "book:更新书籍列表, readTime:更新阅读时长数据, all:更新所有数据")
 	flag.Parse()
 
+	fmt.Println("启动 WeRead 数据获取，时间：%v，模式:", time.Now(), *mode)
+
 	switch *mode {
 	case "all":
 		if err := updateReadTimeData(); err != nil {
