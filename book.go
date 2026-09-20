@@ -224,11 +224,7 @@ func CalculateBooks(bookFromWeRead *BookShelfInfoResponse, bookDetailList map[st
 			// 使用并发上传管理器获取封面token
 			coverToken := ""
 			if weReadBook.Cover != "" {
-				var err error
-				coverToken, err = uploadManager.GetResult(weReadBook.Cover)
-				if err != nil {
-					return nil, nil, nil, err
-				}
+				coverToken = coverTokenOrEmpty(weReadBook.Cover, uploadManager.GetResult)
 			}
 			bookMap := convertBookToMap(weReadBook, coverToken)
 			toAdd = append(toAdd, bookMap)
@@ -256,11 +252,7 @@ func CalculateBooks(bookFromWeRead *BookShelfInfoResponse, bookDetailList map[st
 			// 使用并发上传管理器获取封面token
 			coverToken := ""
 			if weReadBook.Cover != "" {
-				var err error
-				coverToken, err = uploadManager.GetResult(weReadBook.Cover)
-				if err != nil {
-					return nil, nil, nil, err
-				}
+				coverToken = coverTokenOrEmpty(weReadBook.Cover, uploadManager.GetResult)
 			}
 
 			newBookMap := convertBookToMap(weReadBook, coverToken)
@@ -272,6 +264,15 @@ func CalculateBooks(bookFromWeRead *BookShelfInfoResponse, bookDetailList map[st
 	}
 
 	return toAdd, toEdit, toDelete, nil
+}
+
+func coverTokenOrEmpty(coverURL string, getResult func(string) (string, error)) string {
+	token, err := getResult(coverURL)
+	if err != nil {
+		fmt.Printf("上传封面失败，跳过封面: %v\n", err)
+		return ""
+	}
+	return token
 }
 
 func convertBookToMap(book *Book, coverToken string) map[string]interface{} {
@@ -308,25 +309,27 @@ func convertBookToMap(book *Book, coverToken string) map[string]interface{} {
 	}
 
 	ret := map[string]interface{}{
-		"bookId":          book.BookId,
-		"书名":            book.Title,
-		"书架分类":        book.ShelfName,
-		"价格":            book.Price,
-		"作者":            book.Author,
-		"分类":            book.Categories,
-		"一级分类":        firstLevelCategories,
-		"是否可读":        canRead,
-		"评分":            book.Score,
-		"阅读时长（秒）":    book.ReadTime,
-		"阅读时长（时）":    float64(book.ReadTime) / 3600,
-		"阅读时长（分）":    float64(book.ReadTime) / 60,
-		"评分（可视化）":    int(book.Score / 10),
-		"阅读时长格式化":  readTimeFormatted,
-		"封面":            []map[string]string{{"file_token": coverToken}},
+		"bookId":    book.BookId,
+		"书名":        book.Title,
+		"书架分类":      book.ShelfName,
+		"价格":        book.Price,
+		"作者":        book.Author,
+		"分类":        book.Categories,
+		"一级分类":      firstLevelCategories,
+		"是否可读":      canRead,
+		"评分":        book.Score,
+		"阅读时长（秒）":   book.ReadTime,
+		"阅读时长（时）":   float64(book.ReadTime) / 3600,
+		"阅读时长（分）":   float64(book.ReadTime) / 60,
+		"评分（可视化）":   int(book.Score / 10),
+		"阅读时长格式化":   readTimeFormatted,
 		"字数（单位：万字）": book.Words,
-		"简介":            book.Intro,
-		"阅读进度":        book.Progress,
-		"是否已读完":      finishRead,
+		"简介":        book.Intro,
+		"阅读进度":      book.Progress,
+		"是否已读完":     finishRead,
+	}
+	if coverToken != "" {
+		ret["封面"] = []map[string]string{{"file_token": coverToken}}
 	}
 
 	// 如果已经阅读完成，才设置阅读完成时间字段

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -23,4 +24,23 @@ func TestUploadCoverToSheet(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("token:%s", token)
+}
+
+func TestCoverTokenOrEmptySkipsFailedUpload(t *testing.T) {
+	token := coverTokenOrEmpty("cover.jpg", func(string) (string, error) {
+		return "", errors.New("cover source unavailable")
+	})
+
+	if token != "" {
+		t.Errorf("token = %q, want an empty attachment token after upload failure", token)
+	}
+}
+
+func TestConvertBookToMapOmitsCoverWithoutUploadToken(t *testing.T) {
+	book := &Book{BookId: "book-1", Title: "测试书", Cover: "https://example.com/cover.jpg"}
+	fields := convertBookToMap(book, "")
+
+	if _, exists := fields["封面"]; exists {
+		t.Fatal("expected an unavailable cover upload to omit the attachment field")
+	}
 }

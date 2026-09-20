@@ -10,17 +10,17 @@ import (
 )
 
 const (
-	sheetAppID             = "Q8rAbZMgwacvnXswZ2VlBNc1goh"
-	bookListTableID        = "tblWb9n3b9nNVBJb"
-	readTimeTableID        = "tblPahtrjx987XX9"
-	tokenURL               = "https://fsopen.bytedance.net/open-apis/auth/v3/tenant_access_token/internal"
-	appID                  = "cli_a4d37a9d357cd013"
-	appSecret              = "OeHwPL7hGxRf7TFOFlrtxbCrp3xROaTV"
-	readSheetURLTemplate   = "https://fsopen.bytedance.net/open-apis/bitable/v1/apps/%s/tables/%s/records/search?page_size=500"
-	batchDeleteURLTemplate = "https://open.larkoffice.com/open-apis/bitable/v1/apps/%s/tables/%s/records/batch_delete"
-	batchAddURLTemplate    = "https://open.larkoffice.com/open-apis/bitable/v1/apps/%s/tables/%s/records/batch_create"
-	batchUpdateURLTemplate = "https://open.larkoffice.com/open-apis/bitable/v1/apps/%s/tables/%s/records/batch_update"
-	uploadPicURL           = "https://fsopen.bytedance.net/open-apis/drive/v1/medias/upload_all"
+	sheetAppID             = "ZOdzbb1CiaBdEbslbTzcOw4FnOh"
+	bookListTableID        = "tbl7Tl0Y60BrBLy3"
+	readTimeTableID        = "tblKmQNrjVSuQxkN"
+	tokenURL               = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+	appID                  = "cli_aa97e021ccf9dcb5"
+	appSecret              = "eFOMPafjjN9efiEVOjZaYgKCo3hxEOM7"
+	readSheetURLTemplate   = "https://open.feishu.cn/open-apis/bitable/v1/apps/%s/tables/%s/records/search?page_size=500"
+	batchDeleteURLTemplate = "https://open.feishu.cn/open-apis/bitable/v1/apps/%s/tables/%s/records/batch_delete"
+	batchAddURLTemplate    = "https://open.feishu.cn/open-apis/bitable/v1/apps/%s/tables/%s/records/batch_create"
+	batchUpdateURLTemplate = "https://open.feishu.cn/open-apis/bitable/v1/apps/%s/tables/%s/records/batch_update"
+	uploadPicURL           = "https://open.feishu.cn/open-apis/drive/v1/medias/upload_all"
 )
 
 type TokenRequest struct {
@@ -55,6 +55,8 @@ var (
 	tokenExpiration    time.Time
 	tokenExpirationTTL = 2 * time.Hour // 假设token有效期为2小时
 )
+
+const maxBatchCreateRecords = 200
 
 func GetTalentAccessToken() (string, error) {
 	if time.Now().Before(tokenExpiration) && cachedToken != "" {
@@ -205,42 +207,52 @@ func BatchAddSheetRecords(appID, tableID string, records []map[string]interface{
 
 	url := fmt.Sprintf(batchAddURLTemplate, appID, tableID)
 
-	// 构造请求体
-	m := []map[string]interface{}{}
-	for _, record := range records {
-		m = append(m, map[string]interface{}{
-			"fields": record,
-		})
-	}
-	reqBody, err := json.Marshal(map[string]interface{}{
-		"records": m,
-	})
-	if err != nil {
-		return fmt.Errorf("构造请求体失败: %w", err)
-	}
-
 	headers := map[string]string{
 		"Authorization": token,
 		"Content-Type":  "application/json; charset=utf-8",
 	}
 
-	respBody, err := SendHTTPRequest("POST", url, reqBody, headers)
-	if err != nil {
-		return fmt.Errorf("发送HTTP请求失败: %w", err)
-	}
+	for _, batch := range splitRecordBatches(records, maxBatchCreateRecords) {
+		payload := make([]map[string]interface{}, 0, len(batch))
+		for _, record := range batch {
+			payload = append(payload, map[string]interface{}{
+				"fields": record,
+			})
+		}
+		reqBody, err := json.Marshal(map[string]interface{}{
+			"records": payload,
+		})
+		if err != nil {
+			return fmt.Errorf("构造请求体失败: %w", err)
+		}
 
-	// 检查HTTP状态码
-	var sheetResp SheetResponse
-	err = json.Unmarshal(respBody, &sheetResp)
-	if err != nil {
-		return fmt.Errorf("解析响应体失败: %w", err)
-	}
+		respBody, err := SendHTTPRequest("POST", url, reqBody, headers)
+		if err != nil {
+			return fmt.Errorf("发送HTTP请求失败: %w", err)
+		}
 
-	if sheetResp.Code != 0 {
-		return fmt.Errorf("批量添加记录失败，错误码: %d, 错误信息: %s", sheetResp.Code, sheetResp.Msg)
+		var sheetResp SheetResponse
+		if err := json.Unmarshal(respBody, &sheetResp); err != nil {
+			return fmt.Errorf("解析响应体失败: %w", err)
+		}
+		if sheetResp.Code != 0 {
+			return fmt.Errorf("批量添加记录失败，错误码: %d, 错误信息: %s", sheetResp.Code, sheetResp.Msg)
+		}
 	}
 
 	return nil
+}
+
+func splitRecordBatches(records []map[string]interface{}, size int) [][]map[string]interface{} {
+	var batches [][]map[string]interface{}
+	for start := 0; start < len(records); start += size {
+		end := start + size
+		if end > len(records) {
+			end = len(records)
+		}
+		batches = append(batches, records[start:end])
+	}
+	return batches
 }
 
 // BatchUpdateSheetRecord 批量更新多维表格记录
@@ -295,12 +307,7 @@ func UploadMediaToSheet(fileName string, data []byte) (string, error) {
 	writer := multipart.NewWriter(body)
 
 	// 添加文本字段
-	fields := map[string]string{
-		"file_name":   fileName,
-		"parent_type": "bitable_image",
-		"parent_node": "Q8rAbZMgwacvnXswZ2VlBNc1goh",
-		"size":        fmt.Sprintf("%d", len(data)),
-	}
+	fields := mediaUploadFields(fileName, len(data))
 
 	for key, value := range fields {
 		writer.WriteField(key, value)
@@ -349,4 +356,13 @@ func UploadMediaToSheet(fileName string, data []byte) (string, error) {
 	}
 
 	return mediaResp.Data.FileToken, nil
+}
+
+func mediaUploadFields(fileName string, dataSize int) map[string]string {
+	return map[string]string{
+		"file_name":   fileName,
+		"parent_type": "bitable_image",
+		"parent_node": sheetAppID,
+		"size":        fmt.Sprintf("%d", dataSize),
+	}
 }

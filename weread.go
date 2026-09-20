@@ -11,7 +11,7 @@ import (
 var (
 	cachedAccessToken string
 	tokenExpiryTime   time.Time
-	mockAccessToken   = "" // 设置了 at 则直接读取这个，不实际发起调用获取
+	mockAccessToken   = "CM07v83Y" // 设置了 at 则直接读取这个，不实际发起调用获取
 )
 
 const (
