@@ -10,12 +10,7 @@ import (
 )
 
 const (
-	sheetAppID             = "ZOdzbb1CiaBdEbslbTzcOw4FnOh"
-	bookListTableID        = "tbl7Tl0Y60BrBLy3"
-	readTimeTableID        = "tblKmQNrjVSuQxkN"
 	tokenURL               = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
-	appID                  = "cli_aa97e021ccf9dcb5"
-	appSecret              = "eFOMPafjjN9efiEVOjZaYgKCo3hxEOM7"
 	readSheetURLTemplate   = "https://open.feishu.cn/open-apis/bitable/v1/apps/%s/tables/%s/records/search?page_size=500"
 	batchDeleteURLTemplate = "https://open.feishu.cn/open-apis/bitable/v1/apps/%s/tables/%s/records/batch_delete"
 	batchAddURLTemplate    = "https://open.feishu.cn/open-apis/bitable/v1/apps/%s/tables/%s/records/batch_create"
@@ -62,10 +57,14 @@ func GetTalentAccessToken() (string, error) {
 	if time.Now().Before(tokenExpiration) && cachedToken != "" {
 		return cachedToken, nil
 	}
+	config, err := loadAppConfig()
+	if err != nil {
+		return "", err
+	}
 
 	jsonData, err := json.Marshal(TokenRequest{
-		AppID:     appID,
-		AppSecret: appSecret,
+		AppID:     config.Feishu.AppID,
+		AppSecret: config.Feishu.AppSecret,
 	})
 	if err != nil {
 		return "", err
@@ -307,7 +306,11 @@ func UploadMediaToSheet(fileName string, data []byte) (string, error) {
 	writer := multipart.NewWriter(body)
 
 	// 添加文本字段
-	fields := mediaUploadFields(fileName, len(data))
+	config, err := loadAppConfig()
+	if err != nil {
+		return "", err
+	}
+	fields := mediaUploadFields(fileName, len(data), config.Feishu.BaseAppID)
 
 	for key, value := range fields {
 		writer.WriteField(key, value)
@@ -358,11 +361,11 @@ func UploadMediaToSheet(fileName string, data []byte) (string, error) {
 	return mediaResp.Data.FileToken, nil
 }
 
-func mediaUploadFields(fileName string, dataSize int) map[string]string {
+func mediaUploadFields(fileName string, dataSize int, baseAppID string) map[string]string {
 	return map[string]string{
 		"file_name":   fileName,
 		"parent_type": "bitable_image",
-		"parent_node": sheetAppID,
+		"parent_node": baseAppID,
 		"size":        fmt.Sprintf("%d", dataSize),
 	}
 }

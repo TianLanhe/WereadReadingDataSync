@@ -7,7 +7,12 @@ import (
 )
 
 func TestTransferSheetRecordToBook(t *testing.T) {
-	records, err := ReadSheetRecords(sheetAppID, bookListTableID)
+	requireLiveTest(t)
+	config, err := loadAppConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := ReadSheetRecords(config.Feishu.BaseAppID, config.Feishu.BookListTableID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -19,6 +24,7 @@ func TestTransferSheetRecordToBook(t *testing.T) {
 }
 
 func TestUploadCoverToSheet(t *testing.T) {
+	requireLiveMutationTest(t)
 	token, err := UploadCoverToSheet("https://wfqqreader-1252317822.image.myqcloud.com/cover/600/33810600/t6_33810600.jpg")
 	if err != nil {
 		t.Fatal(err)

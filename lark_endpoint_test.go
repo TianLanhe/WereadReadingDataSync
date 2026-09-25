@@ -28,13 +28,13 @@ func TestFeishuEndpointsUsePublicAPIHost(t *testing.T) {
 }
 
 func TestMediaUploadFieldsTargetCurrentBase(t *testing.T) {
-	fields := mediaUploadFields("cover.jpg", 123)
+	fields := mediaUploadFields("cover.jpg", 123, "base-id")
 
 	if fields["parent_type"] != "bitable_image" {
 		t.Errorf("parent_type = %q, want bitable_image", fields["parent_type"])
 	}
-	if fields["parent_node"] != sheetAppID {
-		t.Errorf("parent_node = %q, want current Base ID %q", fields["parent_node"], sheetAppID)
+	if fields["parent_node"] != "base-id" {
+		t.Errorf("parent_node = %q, want base-id", fields["parent_node"])
 	}
 }
 

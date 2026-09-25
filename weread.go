@@ -11,13 +11,10 @@ import (
 var (
 	cachedAccessToken string
 	tokenExpiryTime   time.Time
-	mockAccessToken   = "CM07v83Y" // 设置了 at 则直接读取这个，不实际发起调用获取
 )
 
 const (
-	getAccessTokenURL    = "https://i.weread.qq.com/login"
 	bookShelfInfoURL     = "https://i.weread.qq.com/shelf/sync?synckey=0&teenmode=0&album=1&onlyBookid=0&localBookCount=0"
-	VID                  = "56716952"
 	bookInfoURL          = "https://i.weread.qq.com/book/info"
 	mineReadBookURL      = "https://i.weread.qq.com/mine/readbook?count=100&rating=0&star=0&listType=3&yearRange=0_0&maxidx=%d"
 	MaxConcurrentWorkers = 10 // 控制并发协程数量
@@ -111,12 +108,6 @@ type Archive struct {
 
 ////////////// 我的书架返回结构 /////////////////////
 
-type LoginResponse struct {
-	AccessToken string `json:"accessToken"`
-	Errcode     int    `json:"errcode"`
-	Errmsg      string `json:"errmsg"`
-}
-
 // 书籍详情响应结构体
 type BookDetailResponse struct {
 	Intro                string     `json:"intro"`
@@ -203,20 +194,7 @@ type ReadingTimeResponse struct {
 
 // 封装HTTP请求逻辑
 func GetWeReadBookShelfInfo() (*BookShelfInfoResponse, error) {
-	// 调用GetAccessToken获取access_token
-	accessToken, err := GetAccessToken()
-	if err != nil {
-		return nil, fmt.Errorf("获取access_token失败: %w", err)
-	}
-
-	// 设置请求头
-	headers := map[string]string{
-		"accessToken": accessToken,
-		"vid":         VID,
-	}
-
-	// 调用通用HTTP请求函数
-	respBody, err := SendHTTPRequest("GET", bookShelfInfoURL, nil, headers)
+	respBody, err := sendAuthenticatedWeReadGET(bookShelfInfoURL)
 	if err != nil {
 		return nil, fmt.Errorf("发送请求失败: %w", err)
 	}
@@ -235,96 +213,16 @@ func GetWeReadBookShelfInfo() (*BookShelfInfoResponse, error) {
 	return &data, nil
 }
 
-// GetAccessToken 获取微信读书 api 的最新可用 access_token
-// 有签名，所有 header 和 body 参数都不能动
-// curl -H "baseapi: 35" -H "appver: 9.3.3.10166397" -H "User-Agent: WeRead/9.3.3 WRBrand/xiaomi Dalvik/2.1.0 (Linux; U; Android 15; 23127PN0CC Build/AQ3A.240627.003)" -H "osver: 15" -H "channelId: 12" -H "basever: 9.3.3.10166397" -H "Content-Type: application/json; charset=UTF-8" -H "Host: i.weread.qq.com" --data-binary "{\"deviceId\":\"35131332146558625892183068982281635306\",\"deviceName\":\"xiaomi\",\"inBackground\":0,\"kickType\":1,\"random\":374,\"refCgi\":\"https://service.placeholder.com/get/lastlisten\",\"refreshToken\":\"onb3MjpSZ8tG3M5WT22Ud9aVwtpQ@nuzeHzHDTdi_YeNHlViACwAA\",\"signature\":\"da16d7229d7cf6bdba7186d81e793d96257dfcc0d8c7f576b870e1de4858289a\",\"timestamp\":1750597697968,\"trackId\":\"\",\"virtualChannelId\":\"\",\"wxToken\":0}" --compressed "https://i.weread.qq.com/login"
+// GetAccessToken 刷新并缓存当前进程使用的微信读书 accessToken。
 func GetAccessToken() (string, error) {
-	// 有 mock 的可能在调试，先用 mock 的
-	if mockAccessToken != "" {
-		return mockAccessToken, nil
-	}
-	// 检查缓存是否有效
-	if time.Now().Before(tokenExpiryTime) && cachedAccessToken != "" {
-		return cachedAccessToken, nil
-	}
-
-	// 请求体数据
-	payload := map[string]interface{}{
-		"deviceId":         "35131332146558625892183068982281635306",
-		"deviceName":       "xiaomi",
-		"inBackground":     0,
-		"kickType":         1,
-		"random":           374,
-		"refCgi":           "https://service.placeholder.com/get/lastlisten",
-		"refreshToken":     "onb3MjpSZ8tG3M5WT22Ud9aVwtpQ@nuzeHzHDTdi_YeNHlViACwAA",
-		"signature":        "da16d7229d7cf6bdba7186d81e793d96257dfcc0d8c7f576b870e1de4858289a",
-		"timestamp":        1750597697968,
-		"trackId":          "",
-		"virtualChannelId": "",
-		"wxToken":          0,
-	}
-
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("JSON编码失败: %w", err)
-	}
-
-	// 设置请求头
-	headers := map[string]string{
-		"baseapi":      "35",
-		"appver":       "9.3.3.10166397",
-		"User-Agent":   "WeRead/9.3.3 WRBrand/xiaomi Dalvik/2.1.0 (Linux; U; Android 15; 23127PN0CC Build/AQ3A.240627.003)",
-		"osver":        "15",
-		"channelId":    "12",
-		"basever":      "9.3.3.10166397",
-		"Content-Type": "application/json; charset=UTF-8",
-		"Host":         "i.weread.qq.com",
-	}
-
-	// 调用SendHTTPRequest函数
-	respBody, err := SendHTTPRequest("POST", getAccessTokenURL, jsonData, headers, true)
-	if err != nil {
-		return "", fmt.Errorf("发送请求失败: %w", err)
-	}
-
-	// 解析JSON响应
-	var loginResp LoginResponse
-	err = json.Unmarshal(respBody, &loginResp)
-	if err != nil {
-		return "", fmt.Errorf("解析JSON失败: %w", err)
-	}
-
-	// 检查Errcode
-	if loginResp.Errcode != 0 {
-		return "", fmt.Errorf("业务请求失败: errcode=%d, errmsg=%s", loginResp.Errcode, loginResp.Errmsg)
-	}
-
-	// 更新缓存，假设token有效期为3分钟
-	cachedAccessToken = loginResp.AccessToken
-	tokenExpiryTime = time.Now().Add(3 * time.Minute)
-
-	return loginResp.AccessToken, nil
+	return getWeReadAccessToken()
 }
 
 // GetBookDetail 获取书籍详情
 func GetBookDetail(bookID string) (*BookDetailResponse, error) {
-	// 调用GetAccessToken获取access_token
-	accessToken, err := GetAccessToken()
-	if err != nil {
-		return nil, fmt.Errorf("获取access_token失败: %w", err)
-	}
-
 	// 构建请求URL
 	url := fmt.Sprintf("%s?bookId=%s", bookInfoURL, bookID)
-
-	// 设置请求头
-	headers := map[string]string{
-		"accessToken": accessToken,
-		"vid":         VID,
-	}
-
-	// 调用通用HTTP请求函数
-	respBody, err := SendHTTPRequest("GET", url, nil, headers)
+	respBody, err := sendAuthenticatedWeReadGET(url)
 	if err != nil {
 		return nil, fmt.Errorf("发送请求失败: %w", err)
 	}
@@ -422,24 +320,11 @@ func GetMineReadBook() ([]*MineReadBook, map[string]*MineReadBook, map[string]*M
 	finishBooks := make(map[string]*MineReadBook)
 	readingBooks := make(map[string]*MineReadBook)
 
-	// 调用GetAccessToken获取access_token
-	accessToken, err := GetAccessToken()
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("获取access_token失败: %w", err)
-	}
-
 	for {
 		// 构建请求URL
 		url := fmt.Sprintf(mineReadBookURL, maxidx)
 
-		// 设置请求头
-		headers := map[string]string{
-			"accessToken": accessToken,
-			"vid":         VID,
-		}
-
-		// 调用通用HTTP请求函数
-		respBody, err := SendHTTPRequest("GET", url, nil, headers)
+		respBody, err := sendAuthenticatedWeReadGET(url)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("发送请求失败: %w", err)
 		}
@@ -474,12 +359,6 @@ func GetMineReadBook() ([]*MineReadBook, map[string]*MineReadBook, map[string]*M
 
 // GetYearReadingTime 获取一整年阅读时长
 func GetYearReadingTime(yearOffset int) (map[time.Time]int64, map[time.Time]int64, error) {
-	// 调用GetAccessToken获取access_token
-	accessToken, err := GetAccessToken()
-	if err != nil {
-		return nil, nil, fmt.Errorf("获取access_token失败: %w", err)
-	}
-
 	// 计算baseTime
 	var baseTime int64
 	if yearOffset == 0 {
@@ -496,14 +375,7 @@ func GetYearReadingTime(yearOffset int) (map[time.Time]int64, map[time.Time]int6
 	// 构建请求URL
 	url := fmt.Sprintf(readingTimeURL, baseTime)
 
-	// 设置请求头
-	headers := map[string]string{
-		"accessToken": accessToken,
-		"vid":         VID,
-	}
-
-	// 调用通用HTTP请求函数
-	respBody, err := SendHTTPRequest("GET", url, nil, headers)
+	respBody, err := sendAuthenticatedWeReadGET(url)
 	if err != nil {
 		return nil, nil, fmt.Errorf("发送请求失败: %w", err)
 	}

@@ -2,12 +2,22 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 )
+
+type HTTPStatusError struct{ StatusCode int }
+
+func (e *HTTPStatusError) Error() string { return fmt.Sprintf("HTTP 状态码 %d", e.StatusCode) }
+
+func isHTTPStatus(err error, status int) bool {
+	var responseErr *HTTPStatusError
+	return errors.As(err, &responseErr) && responseErr.StatusCode == status
+}
 
 // logExecutionTime 打印函数执行耗时日志
 func logExecutionTime(name string) func() {
@@ -83,7 +93,7 @@ func SendHTTPRequest(method, path string, body []byte, headers map[string]string
 
 	// 判断返回状态码是否正常
 	if resp.StatusCode != 200 {
-		return respBody, fmt.Errorf("unexpected status code: %d, response: %s", resp.StatusCode, string(respBody))
+		return respBody, &HTTPStatusError{StatusCode: resp.StatusCode}
 	}
 
 	// 打印返回内容

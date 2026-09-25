@@ -1,0 +1,9 @@
+{
+  "feishu": {
+    "appId": "",
+    "appSecret": "",
+    "baseAppId": "",
+    "bookListTableId": "",
+    "readTimeTableId": ""
+  }
+}

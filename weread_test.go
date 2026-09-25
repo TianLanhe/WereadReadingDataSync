@@ -6,14 +6,18 @@ import (
 )
 
 func TestGetAccessToken(t *testing.T) {
+	requireLiveTest(t)
 	at, err := GetAccessToken()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("data:%s", at)
+	if at == "" {
+		t.Fatal("GetAccessToken returned an empty token")
+	}
 }
 
 func TestGetMineReadBook(t *testing.T) {
+	requireLiveTest(t)
 	all, _, _, err := GetMineReadBook()
 	if err != nil {
 		t.Fatal(err)
@@ -23,6 +27,7 @@ func TestGetMineReadBook(t *testing.T) {
 }
 
 func TestGetYearReadingTime(t *testing.T) {
+	requireLiveTest(t)
 	got, got2, err := GetYearReadingTime(0)
 	if err != nil {
 		t.Fatal(err)

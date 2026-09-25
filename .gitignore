@@ -1,3 +1,5 @@
 .idea
 weread2lark
 main
+config.local.json
+auth.local.json
