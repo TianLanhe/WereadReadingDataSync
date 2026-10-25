@@ -1,62 +1,42 @@
 package main
 
 import (
+	"fmt"
 	"time"
 )
 
-func CalculateReadTime(readingTimeFromWeread map[time.Time]int64, readingTimeFromSheet []*SheetRecord) ([]map[string]interface{}, []*SheetRecord, []string, error) {
-	var toAdd []map[string]interface{}
-	var toEdit []*SheetRecord
-	var toDelete []string
-
-	// 1. 先遍历 readingTimeFromSheet，找出不在 readingTimeFromWeread 存在的记录，添加到待删除列表中
-	for _, record := range readingTimeFromSheet {
-		dateUnixMilli := getInt64Value(record.Fields, "日期")
-		date := time.UnixMilli(dateUnixMilli)
-		if _, exists := readingTimeFromWeread[date]; !exists {
-			toDelete = append(toDelete, record.RecordID)
+func CalculateReadTime(source map[time.Time]int64, records []*SheetRecord) ([]map[string]interface{}, []*SheetRecord, []string, error) {
+	var add []map[string]interface{}
+	var update []*SheetRecord
+	var remove []string
+	existing := make(map[int64]bool, len(records))
+	byDay := make(map[int64]int64, len(source))
+	for day, seconds := range source {
+		byDay[day.UnixMilli()] = seconds
+	}
+	for _, r := range records {
+		if r == nil || r.RecordID == "" {
+			return nil, nil, nil, fmt.Errorf("阅读时长记录缺少标识")
+		}
+		stamp := getInt64Value(r.Fields, "日期")
+		if stamp == 0 {
+			return nil, nil, nil, fmt.Errorf("阅读时长记录缺少有效日期")
+		}
+		existing[stamp] = true
+		seconds, exists := byDay[stamp]
+		if !exists {
+			remove = append(remove, r.RecordID)
+		} else if getInt64Value(r.Fields, "当日阅读时长（秒）") != seconds {
+			update = append(update, &SheetRecord{RecordID: r.RecordID, Fields: convertReadTimeToMap(time.UnixMilli(stamp), seconds)})
 		}
 	}
-
-	// 2. 再遍历 readingTimeFromWeread，找出不在 readingTimeFromSheet 存在的记录，添加到待添加列表中
-	for date, readTime := range readingTimeFromWeread {
-		dateUnixMilli1 := date.UnixMilli()
-		found := false
-		for _, record := range readingTimeFromSheet {
-			dateUnixMilli2 := getInt64Value(record.Fields, "日期")
-			if dateUnixMilli1 == dateUnixMilli2 {
-				found = true
-				break
-			}
-		}
-		if !found {
-			toAdd = append(toAdd, convertReadTimeToMap(date, readTime))
+	for day, seconds := range source {
+		if !existing[day.UnixMilli()] {
+			add = append(add, convertReadTimeToMap(day, seconds))
 		}
 	}
-
-	// 3. 最后遍历 readingTimeFromSheet，找出值在 readingTimeFromWeread 存在差异的记录，添加到待编辑列表中
-	for _, record := range readingTimeFromSheet {
-		dateUnixMilli := getInt64Value(record.Fields, "日期")
-		date := time.UnixMilli(dateUnixMilli)
-		if readTime, exists := readingTimeFromWeread[date]; exists {
-			readTimeFromSheet := getInt64Value(record.Fields, "当日阅读时长（秒）")
-			if readTimeFromSheet != readTime {
-				toEdit = append(toEdit, &SheetRecord{
-					Fields:   convertReadTimeToMap(date, readTime),
-					RecordID: record.RecordID,
-				})
-			}
-		}
-	}
-
-	return toAdd, toEdit, toDelete, nil
+	return add, update, remove, nil
 }
-
-func convertReadTimeToMap(date time.Time, readTime int64) map[string]interface{} {
-	return map[string]interface{}{
-		"日期":             date.UnixMilli(),
-		"当日阅读时长（秒）": readTime,
-		"当日阅读时长（时）": float64(readTime) / 3600,
-		"当日阅读时长（分）": float64(readTime) / 60,
-	}
+func convertReadTimeToMap(date time.Time, seconds int64) map[string]interface{} {
+	return map[string]interface{}{"日期": date.UnixMilli(), "当日阅读时长（秒）": seconds, "当日阅读时长（时）": float64(seconds) / 3600, "当日阅读时长（分）": float64(seconds) / 60}
 }

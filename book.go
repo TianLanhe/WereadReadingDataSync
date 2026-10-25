@@ -2,8 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"time"
 )
@@ -92,9 +90,7 @@ func TransferShelfResponseToBook(bookFromWeRead *BookShelfInfoResponse, bookDeta
 	for bookID, book := range finishBooks {
 		bookIdToProgress[bookID] = 1
 		bookIdToFinishTime[bookID] = book.FinishTime * 1000
-		if book.FinishTime == 0 {
-			fmt.Printf("错误：已完成阅读的书籍《%s》阅读时间不应该为0\n", book.Title)
-		}
+
 	}
 
 	weReadBookMap := make(map[string]*Book)
@@ -152,124 +148,21 @@ func TransferShelfResponseToBook(bookFromWeRead *BookShelfInfoResponse, bookDeta
 }
 
 // CalculateBooks 比较书籍列表，返回需要添加、编辑和删除的书籍列表
-func CalculateBooks(bookFromWeRead *BookShelfInfoResponse, bookDetailList map[string]*BookDetailResponse, finishedBooks map[string]*MineReadBook, bookFromSheet []*SheetRecord) ([]map[string]interface{}, []*SheetRecord, []string, error) {
-	// 调用 TransferSheetRecordToBook 转换 bookFromSheet
-	sheetBookList, sheetBookId2recordId := TransferSheetRecordToBook(bookFromSheet)
-
-	// 调用 TransferShelfResponseToBook 函数转换 bookFromWeRead
-	weReadBookMap := TransferShelfResponseToBook(bookFromWeRead, bookDetailList, finishedBooks)
-
-	// 将已读完的也转化一下
-	finishedBooksMap := TransferShelfResponseToBook(TransferMineReadBookToShelfResponse(finishedBooks), bookDetailList, finishedBooks)
-
-	// 合并weReadBookMap和finishedBooksMap，重复项以weReadBookMap优先
-	for bookId, book := range finishedBooksMap {
-		if _, exists := weReadBookMap[bookId]; !exists {
-			weReadBookMap[bookId] = book
-		}
+func CalculateBooks(shelf *BookShelfInfoResponse, details map[string]*BookDetailResponse, finished map[string]*MineReadBook, records []*SheetRecord) ([]map[string]interface{}, []*SheetRecord, []string, error) {
+	plan, err := makeBookPlan(shelf, details, finished, records)
+	if err != nil {
+		return nil, nil, nil, err
 	}
-
-	// 创建并发上传管理器，限制QPS为5
-	uploadManager := NewCoverUploadManager(picUploadConcurrentQPS, maxPicUploadWaitTime)
-	defer uploadManager.Close()
-
-	// 收集需要上传封面的书籍（仅添加到toAdd和toEdit的）
-	var booksNeedCover []*Book
-	var toAdd []map[string]interface{}
-	var toEdit []*SheetRecord
-	var toDelete []string
-
-	// 找出需要添加的书籍
-	for bookId, weReadBook := range weReadBookMap {
-		if _, exists := sheetBookId2recordId[bookId]; !exists {
-			booksNeedCover = append(booksNeedCover, weReadBook)
-		}
-	}
-
-	// 找出需要编辑的书
-	for _, sheetBook := range sheetBookList {
-		if sheetBook.BookId == "" {
-			fmt.Printf("Invalid bookId in sheetBook: %+v\n", sheetBook)
-			continue
-		}
-		recordID, ok := sheetBookId2recordId[sheetBook.BookId]
-		if !ok || recordID == "" {
-			fmt.Printf("Invalid recordId in sheetBookId2recordId: %+v\n", sheetBookId2recordId)
-			continue
-		}
-
-		weReadBook, exists := weReadBookMap[sheetBook.BookId]
-		if !exists || weReadBook == nil { // 在表格存在，在微信读书不存在，要删除
-			toDelete = append(toDelete, recordID)
-			fmt.Printf("要删除的书籍记录ID: %s\n", recordID)
-			continue
-		}
-
-		// 两边都存在，如果内容发生了变更则进行更新
-		if !isBookEqual(sheetBook, weReadBook, true) {
-			booksNeedCover = append(booksNeedCover, weReadBook)
-		}
-	}
-
-	// 预加载需要上传的封面（仅实际需要的书籍）
-	for _, book := range booksNeedCover {
-		if book.Cover != "" {
-			uploadManager.StartUpload(book.Cover)
-		}
-	}
-
-	// 处理需要添加的书籍
-	for bookId, weReadBook := range weReadBookMap {
-		if _, exists := sheetBookId2recordId[bookId]; !exists {
-			// 使用并发上传管理器获取封面token
-			coverToken := ""
-			if weReadBook.Cover != "" {
-				coverToken = coverTokenOrEmpty(weReadBook.Cover, uploadManager.GetResult)
-			}
-			bookMap := convertBookToMap(weReadBook, coverToken)
-			toAdd = append(toAdd, bookMap)
-			fmt.Printf("要添加的书籍: %+v\n", bookMap)
-		}
-	}
-
-	// 处理需要编辑的书籍
-	for _, sheetBook := range sheetBookList {
-		if sheetBook.BookId == "" {
-			continue
-		}
-		recordID, ok := sheetBookId2recordId[sheetBook.BookId]
-		if !ok || recordID == "" {
-			continue
-		}
-
-		weReadBook, exists := weReadBookMap[sheetBook.BookId]
-		if !exists || weReadBook == nil {
-			continue
-		}
-
-		// 两边都存在，如果内容发生了变更则进行更新
-		if !isBookEqual(sheetBook, weReadBook, false) {
-			// 使用并发上传管理器获取封面token
-			coverToken := ""
-			if weReadBook.Cover != "" {
-				coverToken = coverTokenOrEmpty(weReadBook.Cover, uploadManager.GetResult)
-			}
-
-			newBookMap := convertBookToMap(weReadBook, coverToken)
-			toEdit = append(toEdit, &SheetRecord{
-				Fields:   newBookMap,
-				RecordID: recordID,
-			})
-		}
-	}
-
-	return toAdd, toEdit, toDelete, nil
+	manager := NewCoverUploadManager(picUploadConcurrentQPS, maxPicUploadWaitTime)
+	defer manager.Close()
+	add, update := materializeBookPlan(plan, manager, nil)
+	return add, update, plan.Deletes, nil
 }
 
 func coverTokenOrEmpty(coverURL string, getResult func(string) (string, error)) string {
 	token, err := getResult(coverURL)
 	if err != nil {
-		fmt.Printf("上传封面失败，跳过封面: %v\n", err)
+		// The caller reports the failure once with its book context.
 		return ""
 	}
 	return token
@@ -343,65 +236,8 @@ func convertBookToMap(book *Book, coverToken string) map[string]interface{} {
 }
 
 // 辅助函数：比较两本书是否相同
-func isBookEqual(book1, book2 *Book, print bool) bool {
-	var diffs []string
-	var keyChange bool
-
-	if book1.Title != book2.Title {
-		diffs = append(diffs, fmt.Sprintf("Title不同: book1=%s, book2=%s", book1.Title, book2.Title))
-	}
-	if book1.Author != book2.Author {
-		diffs = append(diffs, fmt.Sprintf("Author不同: book1=%s, book2=%s", book1.Author, book2.Author))
-	}
-	if book1.Price != book2.Price {
-		diffs = append(diffs, fmt.Sprintf("Price不同: book1=%.2f, book2=%.2f", book1.Price, book2.Price))
-	}
-	if book1.CanRead != book2.CanRead {
-		diffs = append(diffs, fmt.Sprintf("CanRead不同: book1=%v, book2=%v", book1.CanRead, book2.CanRead))
-		keyChange = true
-	}
-	if book1.Score != book2.Score {
-		diffs = append(diffs, fmt.Sprintf("Score不同: book1=%.1f, book2=%.1f", book1.Score, book2.Score))
-	}
-	if book1.ReadTime != book2.ReadTime {
-		diffs = append(diffs, fmt.Sprintf("ReadTime不同: book1=%d, book2=%d", book1.ReadTime, book2.ReadTime))
-		keyChange = true
-	}
-	if book1.ShelfName != book2.ShelfName {
-		diffs = append(diffs, fmt.Sprintf("ShelfName不同: book1=%s, book2=%s", book1.ShelfName, book2.ShelfName))
-		keyChange = true
-	}
-	if book1.Intro != book2.Intro {
-		diffs = append(diffs, fmt.Sprintf("Intro不同: book1=%s, book2=%s", book1.Intro, book2.Intro))
-	}
-	if book1.Words != book2.Words {
-		diffs = append(diffs, fmt.Sprintf("Words不同: book1=%.2f, book2=%.2f", book1.Words, book2.Words))
-		keyChange = true
-	}
-	if book1.Progress != book2.Progress {
-		diffs = append(diffs, fmt.Sprintf("Progress不同: book1=%.2f, book2=%.2f", book1.Progress, book2.Progress))
-		keyChange = true
-	}
-	// 新增FinishTime字段比较
-	if book1.FinishTime != book2.FinishTime {
-		diffs = append(diffs, fmt.Sprintf("FinishTime不同: book1=%d, book2=%d", book1.FinishTime, book2.FinishTime))
-		keyChange = true
-	}
-	if !compareStringSlices(book1.Categories, book2.Categories) {
-		diffs = append(diffs, fmt.Sprintf("Categories不同: book1=%v, book2=%v", book1.Categories, book2.Categories))
-	}
-
-	if len(diffs) > 0 {
-		keyChangeStr := ""
-		if keyChange {
-			keyChangeStr = "（关键信息变更）"
-		}
-		if print {
-			fmt.Printf("这本书(%v)的不同之处%v: %v\n", book1.Title, keyChangeStr, strings.Join(diffs, "\t"))
-		}
-		return false
-	}
-	return true
+func isBookEqual(book1, book2 *Book, _ bool) bool {
+	return len(bookChanges(book1, book2)) == 0
 }
 
 // 辅助函数：比较两个字符串切片是否相同，不考虑元素顺序
@@ -453,6 +289,8 @@ func getFloat64Value(fields map[string]interface{}, key string) float64 {
 			return v
 		case int:
 			return float64(v)
+		case int64:
+			return float64(v)
 		case string:
 			var f float64
 			fmt.Sscanf(v, "%f", &f)
@@ -468,6 +306,8 @@ func getInt64Value(fields map[string]interface{}, key string) int64 {
 		switch v := value.(type) {
 		case int:
 			return int64(v)
+		case int64:
+			return v
 		case float64:
 			return int64(v)
 		case string:
@@ -484,6 +324,8 @@ func getStringSliceValue(fields map[string]interface{}, key string) []string {
 	var result []string
 	if value, ok := fields[key]; ok {
 		switch v := value.(type) {
+		case []string:
+			return append([]string(nil), v...)
 		case []interface{}:
 			for _, item := range v {
 				if strValue, ok := item.(string); ok {
@@ -525,33 +367,9 @@ func getStringValue(fields map[string]interface{}, key string) string {
 
 // UploadCoverToSheet 下载封面图片并上传到飞书表格
 func UploadCoverToSheet(cover string) (string, error) {
-	defer logExecutionTime("UploadCoverToSheet " + cover)()
-
-	// 下载封面图片
-	resp, err := http.Get(cover)
-	if err != nil {
-		return "", fmt.Errorf("下载封面图片失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("下载封面图片失败，状态码: %d", resp.StatusCode)
-	}
-
-	// 读取图片数据
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("读取封面图片数据失败: %w", err)
-	}
-
-	// 调用UploadMediaToSheet上传图片
-	url, err := UploadMediaToSheet(cover, data)
-	if err != nil { // 重试一次
-		time.Sleep(time.Second)
-		fmt.Printf("上传封面失败，重试一次... cover:%v\n", cover)
-		return UploadMediaToSheet(cover, data)
-	}
-	return url, nil
+	manager := NewCoverUploadManager(picUploadConcurrentQPS, maxPicUploadWaitTime)
+	defer manager.Close()
+	return manager.GetResult(cover)
 }
 
 // TransferMineReadBookToShelfResponse 将 MineReadBook 映射到 BookShelfInfoResponse

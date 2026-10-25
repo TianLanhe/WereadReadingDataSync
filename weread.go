@@ -135,6 +135,8 @@ type BookDetailResponse struct {
 ////////////// 我的阅读数据返回结构 /////////////////////
 
 type MineReadBookResponse struct {
+	Errcode        int              `json:"errcode"`
+	Errmsg         string           `json:"errmsg"`
 	Stars          []Star           `json:"stars"`
 	Years          []Year           `json:"years"`
 	Ratings        []Rating         `json:"ratings"`
@@ -193,8 +195,8 @@ type ReadingTimeResponse struct {
 }
 
 // 封装HTTP请求逻辑
-func GetWeReadBookShelfInfo() (*BookShelfInfoResponse, error) {
-	respBody, err := sendAuthenticatedWeReadGET(bookShelfInfoURL)
+func GetWeReadBookShelfInfo(reporters ...Reporter) (*BookShelfInfoResponse, error) {
+	respBody, err := sendWeReadGET(bookShelfInfoURL, firstReporter(reporters))
 	if err != nil {
 		return nil, fmt.Errorf("发送请求失败: %w", err)
 	}
@@ -219,10 +221,10 @@ func GetAccessToken() (string, error) {
 }
 
 // GetBookDetail 获取书籍详情
-func GetBookDetail(bookID string) (*BookDetailResponse, error) {
+func GetBookDetail(bookID string, reporters ...Reporter) (*BookDetailResponse, error) {
 	// 构建请求URL
 	url := fmt.Sprintf("%s?bookId=%s", bookInfoURL, bookID)
-	respBody, err := sendAuthenticatedWeReadGET(url)
+	respBody, err := sendWeReadGET(url, firstReporter(reporters))
 	if err != nil {
 		return nil, fmt.Errorf("发送请求失败: %w", err)
 	}
@@ -242,79 +244,69 @@ func GetBookDetail(bookID string) (*BookDetailResponse, error) {
 }
 
 // BatchGetBookDetail 批量获取书籍详情
-func BatchGetBookDetail(bookIDs []string) (map[string]*BookDetailResponse, error) {
-	defer logExecutionTime(fmt.Sprintf("BatchGetBookDetail(%v) ", len(bookIDs)))()
+func BatchGetBookDetail(bookIDs []string, reporters ...Reporter) (map[string]*BookDetailResponse, error) {
+	r := firstReporter(reporters)
+	return batchGetBookDetails(bookIDs, func(id string) (*BookDetailResponse, error) { return GetBookDetail(id, r) }, r)
+}
 
-	result := make(map[string]*BookDetailResponse)
-	errChan := make(chan error, 1)
-	resultChan := make(chan struct {
-		bookID string
-		detail *BookDetailResponse
-	}, len(bookIDs))
+func batchGetBookDetails(ids []string, fetch func(string) (*BookDetailResponse, error), r Reporter) (map[string]*BookDetailResponse, error) {
+	result := make(map[string]*BookDetailResponse, len(ids))
+	var mu sync.Mutex
+	var firstErr error
+	jobs := make(chan string)
 	var wg sync.WaitGroup
-	// 创建带缓冲的channel作为信号量
-	sem := make(chan struct{}, MaxConcurrentWorkers)
-	stop := make(chan struct{}) // 用于通知停止后续请���
-
-	// 启动goroutine获取每本书的详情
-	for _, bookID := range bookIDs {
-		select {
-		case <-stop:
-			break
-		default:
-			wg.Add(1)
-			sem <- struct{}{} // 获取信号量
-			go func(id string) {
-				defer wg.Done()
-				defer func() {
-					<-sem // 释放信号量
-				}()
-				detail, err := GetBookDetail(id)
+	workers := MaxConcurrentWorkers
+	if len(ids) < workers {
+		workers = len(ids)
+	}
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for id := range jobs {
+				mu.Lock()
+				failed := firstErr != nil
+				mu.Unlock()
+				if failed {
+					continue
+				}
+				detail, err := fetch(id)
+				mu.Lock()
 				if err != nil {
-					select {
-					case errChan <- err:
-						close(stop) // 通知停止后续请求
-					default:
+					if firstErr == nil {
+						firstErr = fmt.Errorf("获取书籍详情失败: %w", err)
 					}
-					return
+				} else if detail == nil {
+					if firstErr == nil {
+						firstErr = fmt.Errorf("书籍详情响应为空")
+					}
+				} else {
+					result[id] = detail
 				}
-				select {
-				case <-stop:
-					return
-				case resultChan <- struct {
-					bookID string
-					detail *BookDetailResponse
-				}{id, detail}:
+				done := len(result)
+				mu.Unlock()
+				if err == nil {
+					report(r, Event{Kind: EventProgress, Stage: "book", Task: "details", Done: done, Total: len(ids)})
 				}
-			}(bookID)
-		}
-	}
-
-	// 等待所有goroutine完成
-	go func() {
-		wg.Wait()
-		close(resultChan)
-		close(errChan)
-	}()
-
-	// 处理错误和结果
-	for {
-		select {
-		case err := <-errChan:
-			if err != nil {
-				return nil, err
 			}
-		case res, ok := <-resultChan:
-			if !ok {
-				return result, nil
-			}
-			result[res.bookID] = res.detail
-		}
+		}()
 	}
+	for _, id := range ids {
+		jobs <- id
+	}
+	close(jobs)
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	if len(result) != len(ids) {
+		return nil, fmt.Errorf("书籍详情数量不完整: %d/%d", len(result), len(ids))
+	}
+	return result, nil
 }
 
 // GetMineReadBook 获取我的阅读数据，包含已读和在读书籍的数据
-func GetMineReadBook() ([]*MineReadBook, map[string]*MineReadBook, map[string]*MineReadBook, error) {
+func GetMineReadBook(reporters ...Reporter) ([]*MineReadBook, map[string]*MineReadBook, map[string]*MineReadBook, error) {
 	maxidx := 0
 	var allBooks []*MineReadBook
 	finishBooks := make(map[string]*MineReadBook)
@@ -324,7 +316,7 @@ func GetMineReadBook() ([]*MineReadBook, map[string]*MineReadBook, map[string]*M
 		// 构建请求URL
 		url := fmt.Sprintf(mineReadBookURL, maxidx)
 
-		respBody, err := sendAuthenticatedWeReadGET(url)
+		respBody, err := sendWeReadGET(url, firstReporter(reporters))
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("发送请求失败: %w", err)
 		}
@@ -335,6 +327,9 @@ func GetMineReadBook() ([]*MineReadBook, map[string]*MineReadBook, map[string]*M
 			return nil, nil, nil, fmt.Errorf("解析JSON失败: %w", err)
 		}
 
+		if data.Errcode != 0 {
+			return nil, nil, nil, fmt.Errorf("已读书籍接口错误码 %d", data.Errcode)
+		}
 		// 按markStatus区分已读和在读书籍
 		for _, book := range data.ReadBooks {
 			allBooks = append(allBooks, book)
@@ -350,7 +345,9 @@ func GetMineReadBook() ([]*MineReadBook, map[string]*MineReadBook, map[string]*M
 			break
 		}
 
-		// 更新maxidx
+		if len(data.ReadBooks) == 0 {
+			return nil, nil, nil, fmt.Errorf("已读书籍分页未前进")
+		}
 		maxidx += len(data.ReadBooks)
 	}
 
@@ -358,7 +355,7 @@ func GetMineReadBook() ([]*MineReadBook, map[string]*MineReadBook, map[string]*M
 }
 
 // GetYearReadingTime 获取一整年阅读时长
-func GetYearReadingTime(yearOffset int) (map[time.Time]int64, map[time.Time]int64, error) {
+func GetYearReadingTime(yearOffset int, reporters ...Reporter) (map[time.Time]int64, map[time.Time]int64, error) {
 	// 计算baseTime
 	var baseTime int64
 	if yearOffset == 0 {
@@ -375,7 +372,7 @@ func GetYearReadingTime(yearOffset int) (map[time.Time]int64, map[time.Time]int6
 	// 构建请求URL
 	url := fmt.Sprintf(readingTimeURL, baseTime)
 
-	respBody, err := sendAuthenticatedWeReadGET(url)
+	respBody, err := sendWeReadGET(url, firstReporter(reporters))
 	if err != nil {
 		return nil, nil, fmt.Errorf("发送请求失败: %w", err)
 	}

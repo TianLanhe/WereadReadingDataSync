@@ -2,104 +2,80 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
+	"strconv"
 	"time"
 )
 
-type HTTPStatusError struct{ StatusCode int }
+type HTTPStatusError struct {
+	StatusCode int
+	Code       int
+	RetryAfter time.Duration
+}
 
-func (e *HTTPStatusError) Error() string { return fmt.Sprintf("HTTP 状态码 %d", e.StatusCode) }
-
+func (e *HTTPStatusError) Error() string {
+	if e.Code != 0 {
+		return fmt.Sprintf("接口错误码 %d（HTTP %d）", e.Code, e.StatusCode)
+	}
+	return fmt.Sprintf("HTTP 状态码 %d", e.StatusCode)
+}
 func isHTTPStatus(err error, status int) bool {
-	var responseErr *HTTPStatusError
-	return errors.As(err, &responseErr) && responseErr.StatusCode == status
+	var e *HTTPStatusError
+	return errors.As(err, &e) && e.StatusCode == status
 }
 
-// logExecutionTime 打印函数执行耗时日志
-func logExecutionTime(name string) func() {
-	now := time.Now()
-	return func() {
-		elapsed := time.Since(now)
-		fmt.Printf("%s执行耗时: %s\n", name, elapsed)
-	}
+var syncHTTPClient = newSyncHTTPClient()
+
+func newSyncHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = 10
+	transport.MaxConnsPerHost = 10
+	return &http.Client{Timeout: 45 * time.Second, Transport: transport}
 }
 
-// GenerateCurlCommand 构建curl命令
-func GenerateCurlCommand(method, path string, body []byte, headers map[string]string) string {
-	var curlCmd []string
-	curlCmd = append(curlCmd, "curl", "-X", method)
-
-	for key, value := range headers {
-		// 为header添加双引号并转义内部引号
-		escapedValue := strings.ReplaceAll(value, "\"", "\\\"")
-		curlCmd = append(curlCmd, "-H", fmt.Sprintf("\"%s: %s\"", key, escapedValue))
-	}
-
-	if body != nil {
-		// 为body添加双引号并转义内部引号
-		escapedBody := strings.ReplaceAll(string(body), "\"", "\\\"")
-		curlCmd = append(curlCmd, "-d", fmt.Sprintf("\"%s\"", escapedBody))
-	}
-
-	curlCmd = append(curlCmd, path)
-	return strings.Join(curlCmd, " ")
+// SendHTTPRequest returns structured errors; presentation belongs to the reporter.
+// The variadic parameter is retained for callers built against the old helper.
+func SendHTTPRequest(method, path string, body []byte, headers map[string]string, _ ...bool) ([]byte, error) {
+	return sendHTTPRequest(context.Background(), method, path, body, headers, nil)
 }
 
-// SendHTTPRequest 通用的执行HTTP请求的函数
-func SendHTTPRequest(method, path string, body []byte, headers map[string]string, debugs ...bool) ([]byte, error) {
-	var debug bool
-	if len(debugs) > 0 {
-		debug = debugs[0]
-	}
-
-	// 打印curl命令
-	if debug {
-		curlCmd := GenerateCurlCommand(method, path, body, headers)
-		fmt.Printf("Generated curl command: %s\n", curlCmd)
-	}
-
-	// 构建HTTP请求
-	var reqBody io.Reader
-	if body != nil {
-		reqBody = bytes.NewBuffer(body)
-	}
-	req, err := http.NewRequest(method, path, reqBody)
+func sendHTTPRequest(ctx context.Context, method, path string, body []byte, headers map[string]string, beforeSend func() error) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-
-	// 设置请求头
-	for key, value := range headers {
-		req.Header.Set(key, value)
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
-
-	// 执行HTTP请求
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	if beforeSend != nil {
+		if err := beforeSend(); err != nil {
+			return nil, err
+		}
+	}
+	resp, err := syncHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
-	// 读取返回体
-	respBody, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
-
-	// 判断返回状态码是否正常
-	if resp.StatusCode != 200 {
-		return respBody, &HTTPStatusError{StatusCode: resp.StatusCode}
+	var api struct {
+		Code int `json:"code"`
 	}
-
-	// 打印返回内容
-	if debug {
-		fmt.Printf("Response body: %s\n", string(respBody))
+	_ = json.Unmarshal(data, &api)
+	if resp.StatusCode != http.StatusOK || api.Code == 99991400 {
+		reset, _ := strconv.ParseFloat(resp.Header.Get("x-ogw-ratelimit-reset"), 64)
+		if reset <= 0 {
+			reset, _ = strconv.ParseFloat(resp.Header.Get("Retry-After"), 64)
+		}
+		return data, &HTTPStatusError{StatusCode: resp.StatusCode, Code: api.Code, RetryAfter: time.Duration(reset * float64(time.Second))}
 	}
-
-	return respBody, nil
+	return data, nil
 }

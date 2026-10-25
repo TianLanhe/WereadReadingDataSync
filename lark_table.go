@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
+	"sync"
 	"time"
 )
 
@@ -53,7 +55,11 @@ var (
 
 const maxBatchCreateRecords = 200
 
+var feishuTokenMu sync.Mutex
+
 func GetTalentAccessToken() (string, error) {
+	feishuTokenMu.Lock()
+	defer feishuTokenMu.Unlock()
 	if time.Now().Before(tokenExpiration) && cachedToken != "" {
 		return cachedToken, nil
 	}
@@ -98,7 +104,6 @@ func GetTalentAccessToken() (string, error) {
 func ReadSheetRecords(appID, tableID string) ([]*SheetRecord, error) {
 	token, err := GetTalentAccessToken()
 	if err != nil {
-		fmt.Printf("Error getting access token: %v\n", err)
 		return nil, err
 	}
 
@@ -123,19 +128,16 @@ func ReadSheetRecords(appID, tableID string) ([]*SheetRecord, error) {
 
 		respBody, err := SendHTTPRequest("POST", url, reqBody, headers)
 		if err != nil {
-			fmt.Printf("Error sending HTTP request: %v\n", err)
 			return nil, err
 		}
 
 		var sheetResp SheetResponse
 		err = json.Unmarshal(respBody, &sheetResp)
 		if err != nil {
-			fmt.Printf("Error decoding sheet response: %v\n", err)
 			return nil, err
 		}
 
 		if sheetResp.Code != 0 {
-			fmt.Printf("Unexpected response code: %d, message: %s\n", sheetResp.Code, sheetResp.Msg)
 			return nil, fmt.Errorf("unexpected response code: %d, message: %s", sheetResp.Code, sheetResp.Msg)
 		}
 
@@ -296,6 +298,17 @@ func BatchUpdateSheetRecords(appID, tableID string, records []*SheetRecord) erro
 
 // UploadMedia 上传素材到飞书
 func UploadMediaToSheet(fileName string, data []byte) (string, error) {
+	config, err := loadAppConfig()
+	if err != nil {
+		return "", err
+	}
+	return uploadMediaToBase(fileName, data, config.Feishu.BaseAppID)
+}
+
+func uploadMediaToBase(fileName string, data []byte, baseID string) (string, error) {
+	return uploadMediaToBaseWithGate(context.Background(), fileName, data, baseID, nil)
+}
+func uploadMediaToBaseWithGate(ctx context.Context, fileName string, data []byte, baseID string, beforeSend func() error) (string, error) {
 	token, err := GetTalentAccessToken()
 	if err != nil {
 		return "", fmt.Errorf("获取访问令牌失败: %w", err)
@@ -306,11 +319,7 @@ func UploadMediaToSheet(fileName string, data []byte) (string, error) {
 	writer := multipart.NewWriter(body)
 
 	// 添加文本字段
-	config, err := loadAppConfig()
-	if err != nil {
-		return "", err
-	}
-	fields := mediaUploadFields(fileName, len(data), config.Feishu.BaseAppID)
+	fields := mediaUploadFields(fileName, len(data), baseID)
 
 	for key, value := range fields {
 		writer.WriteField(key, value)
@@ -319,21 +328,18 @@ func UploadMediaToSheet(fileName string, data []byte) (string, error) {
 	// 添加文件字段
 	part, err := writer.CreateFormFile("file", fileName)
 	if err != nil {
-		fmt.Println("Error creating form file:", err)
 		return "", err
 	}
 
 	reader := bytes.NewReader(data)
 	_, err = io.Copy(part, reader)
 	if err != nil {
-		fmt.Println("Error copying image to request:", err)
 		return "", err
 	}
 
 	// 关闭writer以完成请求体
 	err = writer.Close()
 	if err != nil {
-		fmt.Println("Error closing writer:", err)
 		return "", err
 	}
 
@@ -342,7 +348,7 @@ func UploadMediaToSheet(fileName string, data []byte) (string, error) {
 		"Authorization": token,
 	}
 
-	respBody, err := SendHTTPRequest("POST", uploadPicURL, body.Bytes(), headers)
+	respBody, err := sendHTTPRequest(ctx, "POST", uploadPicURL, body.Bytes(), headers, beforeSend)
 	if err != nil {
 		return "", fmt.Errorf("发送HTTP请求失败: %w", err)
 	}
@@ -355,9 +361,12 @@ func UploadMediaToSheet(fileName string, data []byte) (string, error) {
 	}
 
 	if mediaResp.Code != 0 {
-		return "", fmt.Errorf("上传素材失败，错误码: %d", mediaResp.Code)
+		return "", &HTTPStatusError{StatusCode: 200, Code: mediaResp.Code}
 	}
 
+	if mediaResp.Data.FileToken == "" {
+		return "", fmt.Errorf("上传响应缺少附件标识")
+	}
 	return mediaResp.Data.FileToken, nil
 }
 

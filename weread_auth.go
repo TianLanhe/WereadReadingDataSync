@@ -33,6 +33,7 @@ const weChatLongBaseURL = "https://long.open.weixin.qq.com"
 var weReadHTTPClient = &http.Client{Timeout: 30 * time.Second}
 var weReadAuthMu sync.Mutex
 var weReadRefreshMu sync.Mutex
+var cachedVIDPath, cachedVID string
 
 type weReadCredentials struct {
 	VID          string `json:"vid"`
@@ -110,6 +111,9 @@ func saveWeReadCredentials(path string, credentials weReadCredentials) error {
 	if err := os.Rename(tmp.Name(), path); err != nil {
 		return fmt.Errorf("保存微信读书凭证失败: %w", err)
 	}
+	weReadAuthMu.Lock()
+	cachedVIDPath, cachedVID = path, credentials.VID
+	weReadAuthMu.Unlock()
 	return nil
 }
 
@@ -407,7 +411,15 @@ func loginWithQR(ctx context.Context, client *http.Client, baseURL, wxBaseURL, l
 	return credentials.VID, nil
 }
 
-func runWeReadLogin() error {
+func runWeReadLogin() error { return runWeReadLoginWithReporter(nil) }
+
+func runWeReadLoginWithReporter(r Reporter) error {
+	if r == nil {
+		console := NewConsoleReporter(os.Stdout, false, 80)
+		defer console.Close()
+		r = console
+	}
+	report(r, Event{Kind: EventLogin, Stage: "login"})
 	path, err := weReadCredentialPath()
 	if err != nil {
 		return err
@@ -420,7 +432,7 @@ func runWeReadLogin() error {
 			os.Remove(qrPath)
 		}
 	}()
-	vid, err := loginWithQR(ctx, weReadHTTPClient, weReadBaseURL, weChatBaseURL, weChatLongBaseURL, path, time.Second, func(qr weReadQR) error {
+	_, err = loginWithQR(ctx, weReadHTTPClient, weReadBaseURL, weChatBaseURL, weChatLongBaseURL, path, time.Second, func(qr weReadQR) error {
 		image, err := qrcode.New(qr.ConfirmURL, qrcode.Medium)
 		if err != nil {
 			return err
@@ -442,14 +454,14 @@ func runWeReadLogin() error {
 		if err := file.Close(); err != nil {
 			return err
 		}
-		fmt.Printf("请用微信扫描二维码，图片路径：%s\n", qrPath)
-		fmt.Println(image.ToSmallString(false))
+		report(r, Event{Kind: EventQR, Stage: "login", Path: qrPath, QR: image.ToSmallString(false)})
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	fmt.Printf("微信读书登录完成，账号 vid=%s；刷新凭证已保存到 %s\n", vid, path)
+
+	report(r, Event{Kind: EventLoginSuccess, Stage: "login"})
 	return nil
 }
 
@@ -503,7 +515,7 @@ func getWeReadAccessTokenWithLogin(login func() error) (string, error) {
 }
 
 func loginAndReturnToken(login func() error, cause error) (string, error) {
-	fmt.Fprintln(os.Stderr, "微信读书登录已失效，请扫码重新登录。")
+
 	if err := login(); err != nil {
 		return "", fmt.Errorf("微信读书登录失败: %w（原错误: %v）", err, cause)
 	}
@@ -544,13 +556,13 @@ func sendAuthenticatedWeReadGETWithLogin(path string, login func() error) ([]byt
 		if err != nil {
 			return nil, err
 		}
-		credentials, err := loadWeReadCredentials(credentialPath)
+		vid, err := weReadVID(credentialPath)
 		if err != nil {
 			return nil, err
 		}
 		body, requestErr := SendHTTPRequest(http.MethodGet, path, nil, map[string]string{
 			"accessToken": accessToken,
-			"vid":         credentials.VID,
+			"vid":         vid,
 		})
 		if !weReadAuthenticationExpired(body, requestErr) {
 			return body, requestErr
@@ -567,7 +579,7 @@ func sendAuthenticatedWeReadGETWithLogin(path string, login func() error) ([]byt
 		}
 		weReadAuthMu.Unlock()
 		if !alreadyReplaced {
-			fmt.Fprintln(os.Stderr, "微信读书 token 已失效，请扫码重新登录。")
+
 			if err := login(); err != nil {
 				weReadRefreshMu.Unlock()
 				return nil, fmt.Errorf("微信读书扫码登录失败: %w", err)
@@ -576,4 +588,32 @@ func sendAuthenticatedWeReadGETWithLogin(path string, login func() error) ([]byt
 		weReadRefreshMu.Unlock()
 	}
 	return nil, errors.New("微信读书请求在重新登录后仍未通过认证")
+}
+
+func firstReporter(rs []Reporter) Reporter {
+	if len(rs) > 0 {
+		return rs[0]
+	}
+	return nil
+}
+func sendWeReadGET(path string, r Reporter) ([]byte, error) {
+	return sendAuthenticatedWeReadGETWithLogin(path, func() error { return runWeReadLoginWithReporter(r) })
+}
+
+func weReadVID(path string) (string, error) {
+	weReadAuthMu.Lock()
+	if cachedVIDPath == path && cachedVID != "" {
+		vid := cachedVID
+		weReadAuthMu.Unlock()
+		return vid, nil
+	}
+	weReadAuthMu.Unlock()
+	credentials, err := loadWeReadCredentials(path)
+	if err != nil {
+		return "", err
+	}
+	weReadAuthMu.Lock()
+	cachedVIDPath, cachedVID = path, credentials.VID
+	weReadAuthMu.Unlock()
+	return credentials.VID, nil
 }
